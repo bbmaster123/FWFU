@@ -22,7 +22,6 @@ for /f "tokens=* delims=" %%f in ('dir /a-d /b /o:n "%dir%\*"') do (
 	copy "%%f" "C:\Program Files\DWMBlur\data\AeroPeek.png"
 	cd ..
 	cd ..
-	/*dwmblurglass.exe -loaddll*/
         goto :eof
     )
 )
