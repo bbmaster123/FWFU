@@ -34,6 +34,7 @@
 > Taskbar.TaskListButtonPanel#ExperienceToggleButtonRootPanel@CommonStates > Border#BackroundElement
 > 10. Once you have your target, you can copy the styles as is. For example, if you had Background=Red, set Background=Red in the styler. 
 
-# Video Demonstration (credits to m417z)
+# Video Demonstration 
+##### (credits to m417z)
 [![Demo video](https://github.com/m417z/UWPSpy/raw/main/screenshot-video.png)](https://youtu.be/Zxgk_BOVpfk)
 *Click on the image to view the demo video on YouTube.*
