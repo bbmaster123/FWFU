@@ -10,20 +10,22 @@
 > 1. Download the latest version of [UWPspy](https://ramensoftware.com/downloads/uwpspy.zip). Extract both files, and run UWPspy.exe
 >
 > 2. Select the process you'd like to target, choose UWP, and click spy
-> 
+>
 > ![1](https://github.com/user-attachments/assets/f78896e4-2fa0-49a8-b63b-bd08cec2bb42)
 >
 > 3. You will see a tree of target elements. As you click through each entry, the element will be hilighted in red
+>    
 > ![2](https://github.com/user-attachments/assets/8b88a3be-b25a-46ff-83db-edb755b87aec)
 >
-> 4. To target a specific element you do not know the name of, make sure UWPspy is the active window, hover your cursor over the element to target, and press CTRL+D. This will make UWPspy jump to that element
+> 5. To target a specific element you do not know the name of, make sure UWPspy is the active window, hover your cursor over the element to target, and press CTRL+D. This will make UWPspy jump to that element
 >
-> 5. Once you have found the element you'd like to style, take note of which styles are avaible to that target. Each target may or may not support a given style. For example, an icon might have the Glyph style, but a BackgroundElement will not.
+> 6. Once you have found the element you'd like to style, take note of which styles are avaible to that target. Each target may or may not support a given style. For example, an icon might have the Glyph style, but a BackgroundElement will not.
 >
-> 6. Some (but not all) elements have Visual States. This can include common states (Active, Inactive, PointerOver, etc) and unique states (RunningIndicatorStates, ResizeEnabled, Dragging, etc). Common visual states are shared across serveral elements, while unique states may only be for one specific target or group of targets (Ex. MultiWindowActive). To see which states a target might have, click the visual states tab on the right.  
+> 7. Some (but not all) elements have Visual States. This can include common states (Active, Inactive, PointerOver, etc) and unique states (RunningIndicatorStates, ResizeEnabled, Dragging, etc). Common visual states are shared across serveral elements, while unique states may only be for one specific target or group of targets (Ex. MultiWindowActive). To see which states a target might have, click the visual states tab on the right.  
+>
 >![3](https://github.com/user-attachments/assets/c7772887-6936-49cd-bcb3-e295905db361)
 >
-> 7. Now you may set, alter, or remove styles on the right by double clicking the style's name, and entering a value/style into the box below, then click set. 
+> 8. Now you may set, alter, or remove styles on the right by double clicking the style's name, and entering a value/style into the box below, then click set. 
 >
 > *Remove doesn't just set the value back to default, it will remove the current value and replace it with nothing. If the style had a default value, you will need to either set that in UWPspy or restart explorer to reset it
 >
@@ -31,6 +33,7 @@
 >
 > 8. To target the same element in the styler mod with the same styles, we first need the name of the target. to get this, look at the top right, you'll notice Class: and Name:
 > Use the class, followed by # and then the name (Class#Name)
+>
 >![4](https://github.com/user-attachments/assets/b97e7a3a-6cdf-4cd9-87ce-69b56dd9eb26)
 >
 > ex.
