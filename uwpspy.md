@@ -65,6 +65,9 @@
 - I'm having trouble/I don't get something. Can you help me?
 > Of course! Just create a new issue in the appropriate styler guide repo. Please do try to make sure its something that answered doezens of times before. Read through some of the open and closed issues to see if maybe your question has been already answered or explained. I, like most 
 > people, don't thouroughly enjoy repeating myself :)
+- Okay I found my target(s), but how do I actually know what to set for my styles?
+> See the [styling guide](https://github.com/ramensoftware/windows-11-taskbar-styling-guide)
+
 
 # Video Demonstration 
 ##### (credits to m417z)
