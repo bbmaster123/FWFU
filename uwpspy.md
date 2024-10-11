@@ -3,7 +3,7 @@
 
 *Styles set within UWPspy do not get saved
 
-* Styles Are Case-Sensitive. Use Camel Case (Each Word Starts With A Capital Letter)
+*Styles Are Case-Sensitive. Use Camel Case (Each Word Starts With A Capital Letter)
 
 *To see a video demonstration of the software, please scroll to the bottom of this page
 ##
