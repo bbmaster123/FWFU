@@ -1,5 +1,5 @@
 # How To: Use UWPspy in combination with Windhawk Styler mods.
-*First disable your styler mod, as both programs can conflict when they are used at the same time, causing UWPspy to be unable to set styles directly, and/or explorer restarts.
+*First disable your styler mod, as both programs can conflict when they are used at the same time, causing UWPspy to be unable to set styles, and/or possible explorer restarts.
 
 *Styles set within UWPspy do not get saved
 
@@ -9,11 +9,12 @@
 ##
 > 1. Download the latest version of [UWPspy](https://ramensoftware.com/downloads/uwpspy.zip). Extract both files, and run UWPspy.exe
 >
-> 2. Select the process you'd like to target, choose UWP, and click spy
+> 2. Select the process you'd like to target, choose UWP, and click spy. To target taskbar, choose Explorer.exe, start is StartMenuExperienceHost.exe, settings  is SystemSettings.exe, etc. If you don't see the process you want in the list, first make sure it's running, and then click 
+> refresh. 
 >
 > ![1](https://github.com/user-attachments/assets/f78896e4-2fa0-49a8-b63b-bd08cec2bb42)
 >
-> 3. You will see a tree of target elements. As you click through each entry, the element will be hilighted in red
+> 3. You will then see a tree of target elements. As you click through each entry, the element will be hilighted in red
 >    
 > ![2](https://github.com/user-attachments/assets/8b88a3be-b25a-46ff-83db-edb755b87aec)
 >
@@ -54,17 +55,17 @@
 - Why am I getting an error when I click Set?
 > Either the styler mod was active when you started using UWPspy, or that style cannot be set with UWPspy. If the first thing, disable your styler mod, restart explorer, and try again 
 - How do you get the targets for elements that disappear when you click away? (Ex. Menus, toasts, SnapLayout, etc) 
-> If you are unable to CTRL+D to jump to your target, the best way would be to enlarge UWPspy so it has lots of space to show the visual tree, then bring up the element. You will see the visual tree update, and the targets will appear until you click away. Screenshot the window, paste somewhere, and work from that. 
+> If you are unable to CTRL+D to jump to your target, the best way would be to enlarge UWPspy so it has lots of space to show the visual tree, then bring up the element. You will see the visual tree update, and the targets will appear until you click away. Screenshot the window, paste 
+> somewhere, and work from that. 
 - I was playing around, but I messed things up. How do I reset?
 >  restart explorer
 - Does this work on Windows 10?
 >  UWPspy works, styler mods depend on which app you are trying to style. Taskbar Styler does not work. Notification Center Styler works, and you can fork it and change the includes (@include app.exe) to work with more windows 10 UWP apps
-- I'm trying to move my element, but its dissapearing behind an invisible line? I just want (element) on the (position)! (Ex. Start Menu on the right) 
-> Elements can have a bounding box. This s predefined region where the element may appear, and not outside that space. If you try to move your element outside this defined region, it will being to get cut off until it dissapears. There is no way around this unless you create a 
+- I'm trying to move my element, but its dissapearing behind an invisible line/border/edge? I just want (element) on the (position)! (Ex. Start Menu on the right) 
+> Elements can have a bounding box. This s pre-defined region where the element may appear, and not outside that space. If you try to move your element outside this defined region, it will being to get cut off until it dissapears. There is no way around this unless you create a 
 > completely new mod. (Ex Taskbar on left mod)
 - I'm having trouble/I don't get something. Can you help me?
-> Of course! Just create a new issue in the appropriate styler guide repo. Please do try to make sure its something that answered doezens of times before. Read through some of the open and closed issues to see if maybe your question has been already answered or explained. I, like most 
-> people, don't thouroughly enjoy repeating myself :)
+> Of course! Just create a new issue in the appropriate styler guide repo. Please do try to make sure its not something that has been answered doezens of times before. Read through some of the open and closed issues to see if maybe your question has already been answered or explained. 
 - Okay I found my target(s), but how do I actually know what to set for my styles?
 > See the [styling guide](https://github.com/ramensoftware/windows-11-taskbar-styling-guide)
 
