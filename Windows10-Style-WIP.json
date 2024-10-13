@@ -163,7 +163,7 @@
   "controlStyles[51].target": "Button#ShowAllAppsButton",
   "controlStyles[51].styles[0]": "Visibility=Collapsed",
   "controlStyles[52].target": "Border#ContentBorder@CommonStates > Grid > Border#HighContrastBorder",
-  "controlStyles[52].styles[0]": "Background@PointerOver:=<RevealBorderBrush Color=\"Red\" TargetTheme=\"1\" Opacity=\"0.5\"/>",
+  "controlStyles[52].styles[0]": "Background@PointerOver:=<RevealBorderBrush Color=\"transparent\" TargetTheme=\"1\" Opacity=\"0.5\"/>",
   "controlStyles[52].styles[1]": "BorderBrush@PointerOver:=<RevealBorderBrush Color=\"#22FFFFFF\" TargetTheme=\"1\" Opacity=\"1\"/>",
   "controlStyles[52].styles[2]": "Background@Pressed:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.64\"/>",
   "controlStyles[52].styles[3]": "BorderBrush@Pressed:=<RevealBorderBrush Color=\"#22FFFFFF\" TargetTheme=\"1\" Opacity=\"1\"/>",
