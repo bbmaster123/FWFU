@@ -1,0 +1,142 @@
+<html>
+    <head>
+        <script>
+            // !!! Helper taskbar interop functions !!! //
+            const TASKBAR=1;
+            const UNDERLAY=1;
+            const DEFAULT=0;
+            const BLUR=1;
+            const TRANSPARENT=2;
+            const setOpacity = (which,value) => window.chrome.webview.postMessage({m:"opacity",value,which});
+            const setStyle = (style) => window.chrome.webview.postMessage({m:"style",style});
+
+            // Configuration variables
+            let color = window.rtUserConfig["MATRIX_COLOR"] || '#0F0';  // Change this to set the color
+            const backgroundColor = window.rtUserConfig["MATRIX_BACKGROUND_COLOR"] ||  'rgba(0, 0, 0, 0)';
+           
+            let fontSize = parseInt(window.rtUserConfig["MATRIX_FONT_SIZE"] || '14');
+            let charSpacing = parseInt(window.rtUserConfig["MATRIX_CHAR_SPACING"] || '1');
+
+            // ---------------------- !!! Place your code inside of this self-executing function !!! ---------------------- //
+            (function() {
+                // DEFAULT, BLUR, TRANSPARENT
+                setStyle(TRANSPARENT);
+                // TASKBAR, UNDERLAY
+                setOpacity(UNDERLAY);
+                window.chrome.webview.postMessage({m:"offset",v:0});
+            })();
+        </script>
+        
+        <style>
+            @supports (padding-top: env(safe-area-inset-top)) {
+                body {
+                    padding: 0;
+                    height: 100%;
+                    width: 100%;
+                    overflow: hidden;
+                    margin: 0;             
+                                     
+                }
+            }         
+
+            canvas {
+                width: 100%; 
+                height: 100%; 
+                position: relative;
+                top: 0;
+                left: 0;
+            }
+        </style>
+    </head>
+    <body>
+        <div class='container'>
+            <canvas id='a'/>
+        </div>
+        <script>
+            document.body.style.background = backgroundColor;
+            const canvas = document.getElementById('a');
+            const ctx = canvas.getContext('2d');
+
+            // Matrix animation variables
+            let chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789@#$%^&*()*&^%+-/~{[|`]}ÃÂ¾';
+            let charArray = chars.split('');
+            let columns;
+            let drops = [];
+
+            // Initialize drops
+           function init() {
+    canvas.width = document.documentElement.clientWidth;
+    canvas.height = document.documentElement.clientHeight;
+    columns = Math.floor(canvas.width / (fontSize * charSpacing));
+    for (let i = 0; i < columns; i++) {
+        drops[i] = {
+            y: Math.random() * canvas.height,
+            speed: Math.random() * 2 + 2.14,
+            trail: [] // Store previous positions and characters
+        };
+    }
+}
+
+// Animation loop
+function animate() {
+    requestAnimationFrame(animate);
+
+    // Clear canvas with transparent background
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw animation 
+    ctx.font = `bold ${fontSize}px monospace`;
+
+    for (let i = 0; i < drops.length; i++) {
+        let text = charArray[Math.floor(Math.random() * charArray.length)];
+        
+        // Draw trail with fade
+for (let j = 0; j < drops[i].trail.length; j++) {
+    const intensity = Math.max(0, 255 - j * 8);
+    ctx.globalAlpha = intensity / 255;
+
+    // Convert hex to RGB
+    const hex = color.replace('#', '');
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${intensity / 255})`;
+    ctx.fillText(drops[i].trail[j].char, i * fontSize * charSpacing, drops[i].trail[j].y);
+}
+        
+        // Draw current character
+        ctx.globalAlpha = 1; 
+        ctx.fillStyle = color;
+        ctx.fillText(text, i * fontSize * charSpacing, drops[i].y);
+
+        // Update drop position
+        drops[i].y += drops[i].speed;
+        if (drops[i].y > canvas.height) {
+            drops[i].y = -fontSize; // Reset drop position
+            drops[i].speed = Math.random() * 2 + 2.14; // New random speed
+            drops[i].trail = []; // Reset trail
+        }
+
+        // Store previous positions and characters for trail
+        drops[i].trail.push({y: drops[i].y, char: text});
+        if (drops[i].trail.length > 64) { 
+            drops[i].trail.shift();
+        }
+    }
+}
+
+            // Initialize and start animation
+            init();
+            animate();
+
+            // Update canvas size on window resize
+            window.onresize = function() {
+                canvas.width = document.documentElement.clientWidth;
+                canvas.height = document.documentElement.clientHeight;
+                init();
+            }
+        </script>
+    </body>
+    
+</html>
