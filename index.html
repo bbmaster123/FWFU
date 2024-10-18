@@ -687,7 +687,7 @@ document.body.onload = async () => {
     const update = () => {
         tick++;
     let frameCount = 0;
-    const maxFrames = 12; // Set your desired frame limit
+
 
         if (dimensions.width !== canvas.width || dimensions.height !== canvas.height) {
             dimensions.width = canvas.width;
@@ -695,28 +695,9 @@ document.body.onload = async () => {
             resize(gl, dimensions.width, dimensions.height);
         }
 
-        draw(gl, tick, (Date.now() - start) / 64000);
-
-        // Copy canvas content to offscreen canvas
-        offscreenCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
-        offscreenCtx.drawImage(canvas, 0, 0);
+        draw(gl, tick, (Date.now() - start) / 1000);      
 
 
-
-function captureFrame() {
-        const dataURL = offscreenCanvas.toDataURL('image/png');
-        console.log("Captured frame:", dataURL); // Log to verify
-        const link = document.createElement('a');
-        link.href = dataURL;
-        link.download = `frame_${frameCount}.png`;
-        link.click();
-        frameCount++;
-
-    }
-
-    // Call captureFrame at a more frequent interval (e.g., every 0.5 seconds)
-    setInterval(captureFrame, 16000);
-        requestAnimationFrame(update);
     };
     update();
 
