@@ -62,7 +62,7 @@
 - Does this work on Windows 10?
 >  UWPspy works, styler mods depend on which app you are trying to style. Taskbar Styler does not work. Notification Center Styler works, and you can fork it and change the includes (@include app.exe) to work with more windows 10 UWP apps
 - I'm trying to move my element, but its dissapearing behind an invisible line/border/edge? I just want (element) on the (position)! (Ex. Start Menu on the right) 
-> Elements can have a bounding box. This s pre-defined region where the element may appear, and not outside that space. If you try to move your element outside this defined region, it will being to get cut off until it dissapears. There is no way around this unless you create a 
+> Elements can have a bounding box. This s pre-defined region where the element may appear, and not outside that space. If you try to move your element outside this defined region, it will begin to get cut off until it dissapears. There is no way around this unless you create a 
 > completely new mod. (Ex Taskbar on left mod)
 - I'm having trouble/I don't get something. Can you help me?
 > Of course! Just create a new issue in the appropriate styler guide repo. Please do try to make sure its not something that has been answered doezens of times before. Read through some of the open and closed issues to see if maybe your question has already been answered or explained. 
