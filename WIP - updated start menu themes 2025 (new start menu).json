@@ -500,7 +500,7 @@ windows 10 minimal
   "controlStyles[46].target": "StartMenu.SearchBoxToggleButton",
   "controlStyles[46].styles[0]": "Visibility=Collapsed",
   "controlStyles[47].target": "Windows.UI.Xaml.Controls.Primitives.ToggleButton",
-  "controlStyles[47].styles[0]": "Visibility=Visible",
+  "controlStyles[47].styles[0]": "Visibility=0",
   "controlStyles[48].target": "Microsoft.UI.Xaml.Controls.DropDownButton > Grid > Windows.UI.Xaml.Controls.ContentPresenter > TextBlock",
   "controlStyles[48].styles[0]": "Text=",
   "controlStyles[48].styles[1]": "FontFamily=Segoe Fluent Icons",
@@ -528,5 +528,6 @@ windows 10 minimal
   "controlStyles[1].styles[4]": "Padding=-1",
   "controlStyles[47].styles[2]": "Width=32",
   "controlStyles[1].styles[5]": "BorderBrush:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"1\"/>",
-  "controlStyles[1].styles[6]": "BorderThickness=1"
+  "controlStyles[1].styles[6]": "BorderThickness=1",
+  "controlStyles[52].styles[2]": "HorizontalAlignment=1"
 }
