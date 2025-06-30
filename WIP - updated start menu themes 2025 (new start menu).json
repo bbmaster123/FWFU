@@ -508,8 +508,8 @@ windows 10 minimal
   "controlStyles[54].styles[0]": "HorizontalAlignment=Left",
   "controlStyles[54].styles[1]": "Margin@SearchBoxOnBottomWithoutQFMargin=0"
 }
-RosePine
 
+RosePine
 {
   "controlStyles[0].target": "Windows.UI.Xaml.Controls.Grid#ShowMoreSuggestions",
   "controlStyles[0].styles[0]": "Visibility=Collapsed",
@@ -601,5 +601,7 @@ RosePine
   "controlStyles[35].styles[0]": "Visibility=Collapsed",
   "controlStyles[35].target": "Grid#AllListHeading",
   "controlStyles[36].target": "ScrollViewer",
-  "controlStyles[36].styles[0]": "ScrollViewer.VerticalScrollMode=2"
+  "controlStyles[36].styles[0]": "ScrollViewer.VerticalScrollMode=2",
+  "controlStyles[37].target": "Grid#TopLevelHeader > Grid[2]",
+  "controlStyles[37].styles[0]": "Visibility=Collapsed"
 }
