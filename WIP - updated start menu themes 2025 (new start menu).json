@@ -895,3 +895,13 @@ DownAero
   "controlStyles[25].target": "Microsoft.UI.Xaml.Controls.DropDownButton",
   "controlStyles[25].styles[0]": "Margin=45,-200,45,200"
 }
+
+OnlySearch
+{
+  "controlStyles[0].target": "Grid#FrameRoot",
+  "controlStyles[0].styles[0]": "MaxHeight=160",
+  "controlStyles[0].styles[1]": "MinHeight=100",
+  "controlStyles[1].target": "Border#AcrylicOverlay",
+  "controlStyles[1].styles[0]": "Height=3"
+
+}
