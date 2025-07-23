@@ -11,7 +11,7 @@ No recommended section
   "controlStyles[1].target": "Windows.UI.Xaml.Controls.Grid#NoTopLevelSuggestionsText",
   "controlStyles[1].styles[0]": "Height=0",
   "controlStyles[2].target": "Windows.UI.Xaml.Controls.Grid#ShowMoreSuggestions",
-  "controlStyles[2].styles[0]": "RenderTransform:=<TranslateTransform  X=\"-100\" Y=\"8\"/>",
+  "controlStyles[2].styles[0]": "RenderTransform:=<TranslateTransform  X=\"-100\" Y=\"9\"/>",
   "controlStyles[3].target": "Windows.UI.Xaml.Controls.Button#ShowMoreSuggestionsButton > Grid > Windows.UI.Xaml.Controls.ContentPresenter > Windows.UI.Xaml.Controls.StackPanel > Windows.UI.Xaml.Controls.TextBlock",
   "controlStyles[3].styles[0]": "Text=Recommended",
   "controlStyles[4].target": "Grid#TopLevelSuggestionsRoot > Grid[2]",
@@ -23,7 +23,9 @@ No recommended section
   "controlStyles[6].target": "Grid#UnderlineContainer",
   "controlStyles[6].styles[0]": "Visibility=Visible",
   "controlStyles[7].target": "Windows.UI.Xaml.Controls.GridView#RecommendedList",
-  "controlStyles[7].styles[0]": "Visibility=Collapsed"
+  "controlStyles[7].styles[0]": "Visibility=Collapsed",
+  "controlStyles[8].target": "TextBlock#PinnedListHeaderText",
+  "controlStyles[8].styles[0]": "RenderTransform:=<TranslateTransform Y=\"8\"/>"
 }
 
 Translucent
