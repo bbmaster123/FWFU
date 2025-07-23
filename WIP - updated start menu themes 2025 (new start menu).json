@@ -21,7 +21,9 @@ No recommended section
   "controlStyles[5].target": "Grid#TopLevelSuggestionsRoot",
   "controlStyles[5].styles[0]": "Grid.Row=0",
   "controlStyles[6].target": "Grid#UnderlineContainer",
-  "controlStyles[6].styles[0]": "Visibility=Visible"
+  "controlStyles[6].styles[0]": "Visibility=Visible",
+  "controlStyles[7].target": "Windows.UI.Xaml.Controls.GridView#RecommendedList",
+  "controlStyles[7].styles[0]": "Visibility=Collapsed"
 }
 
 Translucent
