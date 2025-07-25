@@ -116,16 +116,25 @@ Translucent
   "controlStyles[22].styles[0]": "CornerRadius=15",
   "controlStyles[23].target": "StartDocked.AllAppsGridListViewItem > Grid#ContentBorder@CommonStates",
   "controlStyles[23].styles[0]": "Background@PointerOver:=<WindhawkBlur BlurAmount=\"25\" TintColor=\"#15C0C0C0\"/>",
-  "controlStyles[23].styles[1]": "CornerRadius=4",  
+  "controlStyles[23].styles[1]": "CornerRadius=4",
+  "styleConstants[0]": "CommonBgBrush=<WindhawkBlur BlurAmount=\"25\" TintColor=\"#25323232\"/>",
   "controlStyles[24].target": "Border#dropshadow",
   "controlStyles[24].styles[0]": "CornerRadius=15",
   "controlStyles[25].target": "Grid#TopLevelSuggestionsRoot",
   "controlStyles[25].styles[0]": "Visibility=Collapsed",
   "controlStyles[26].target": "TextBlock#Text",
   "controlStyles[26].styles[0]": "Foreground=White",
-  "styleConstants[0]": "CommonBgBrush=<WindhawkBlur BlurAmount=\"25\" TintColor=\"#25323232\"/>"
+  "controlStyles[27].target": "DropDownButton > Grid@CommonStates ",
+  "controlStyles[27].styles[0]": "Background@Normal:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"0\" Opacity=\"0.2\"/>",
+  "controlStyles[27].styles[1]": "Background@PointerOver:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.3\"/>",
+  "controlStyles[28].target": "Button > Grid@CommonStates > Border",
+  "controlStyles[28].styles[0]": "Background@Normal:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"0\" Opacity=\"0.2\"/>",
+  "controlStyles[28].styles[1]": "Background@PointerOver:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.3\"/>",
+  "controlStyles[28].styles[2]": "BorderBrush@PointerOver:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.6\"/>",
+  "controlStyles[29].target": "DropDownButton",
+  "controlStyles[28].styles[3]": "BorderThickness=1",
+  "controlStyles[27].styles[2]": "BorderBrush@PointerOver:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.6\"/>"
 }
-
 
 Windows10
 
