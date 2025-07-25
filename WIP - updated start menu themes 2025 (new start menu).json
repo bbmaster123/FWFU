@@ -806,7 +806,6 @@ Fluent2Inspired
 DownAero
 - recommended button only visible when pinned list is expanded
 
-
 {
   "controlStyles[0].target": "Grid#FrameRoot",
   "controlStyles[0].styles[0]": "MaxHeight=520",
@@ -980,8 +979,6 @@ EverBlush
 }
 
 UniMenu
- - pinned list cut off
- - missing button (all button? no longer needed, will check)
 {
   "controlStyles[0].target": "Windows.UI.Xaml.Controls.Grid#NoTopLevelSuggestionsText",
   "controlStyles[0].styles[0]": "Visibility=Collapsed",
