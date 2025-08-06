@@ -1,24 +1,28 @@
 allows start orb to fade/transition to pointer over state, faking the effect via OpacityTransition. Requires modification depending on screen resolution and scaling.
 
-1920x1200 100%
 {
-  "theme": "Windows7",
+  "theme": "",
   "controlStyles[0].target": "Taskbar.ExperienceToggleButton#LaunchListButton[AutomationProperties.AutomationId=StartButton] > Taskbar.TaskListButtonPanel@CommonStates",
   "styleConstants[0]": "orbNormal=https://raw.githubusercontent.com/ramensoftware/windows-11-taskbar-styling-guide/refs/heads/main/Themes/Windows7/ThemeResources/orbNormal.png",
   "styleConstants[1]": "orbPointerOver=https://raw.githubusercontent.com/ramensoftware/windows-11-taskbar-styling-guide/refs/heads/main/Themes/Windows7/ThemeResources/orbHover.png",
   "controlStyles[0].styles[0]": "OpacityTransition:=<ScalarTransition Duration=\"0:0:0.42\" />",
   "controlStyles[0].styles[1]": "OpacityTransition@InactivePointerOver:=<ScalarTransition Duration=\"0:0:0.42\" />",
   "controlStyles[0].styles[2]": "Opacity@InactiveNormal=0",
-  "controlStyles[0].styles[3]": "Background@InactivePointerOver:=<ImageBrush Stretch=\"none\" ImageSource=\"$orbPointerOver\" Opacity=\"1\" />",
+  "controlStyles[0].styles[3]": "Background:=<ImageBrush Stretch=\"none\" ImageSource=\"$orbPointerOver\" Opacity=\"1\" />",
   "controlStyles[0].styles[4]": "Opacity@InactivePointerOver=1",
   "controlStyles[1].target": "Taskbar.TaskbarBackground > Grid > Rectangle#BackgroundStroke",
   "controlStyles[1].styles[0]": "Fill:=<ImageBrush Stretch=\"None\" ImageSource=\"$orbNormal\" />",
   "styleConstants[2]": "taskbarBackground=https://raw.githubusercontent.com/ramensoftware/windows-11-taskbar-styling-guide/refs/heads/main/Themes/Windows7/ThemeResources/taskbarBackground.png",
   "controlStyles[1].styles[1]": "Canvas.ZIndex=99",
-  "controlStyles[2].target": "Taskbar.TaskbarBackground",
-  "controlStyles[2].styles[0]": "Background:=<ImageBrush Stretch=\"Fill\" ImageSource=\"$taskbarBackground\" />",
+  "controlStyles[2].target": "Grid#RootGrid",
+  "controlStyles[2].styles[0]": "Background:=<ImageBrush Stretch=\"UniformToFill\" Opacity=\"1\" ImageSource=\"$reflection\" />",
   "controlStyles[2].styles[1]": "Visibility=Visible",
-  "controlStyles[1].styles[2]": "Margin=-932,0,932,0",
+  "controlStyles[1].styles[2]": "Margin=-1069,0.5,1068.5,0",
   "controlStyles[0].styles[5]": "OpacityTransition@InactivePressed:=<ScalarTransition Duration=\"0:0:0.42\" />",
-  "controlStyles[0].styles[6]": "OpacityTransition@InactiveNormal:=<ScalarTransition Duration=\"0:0:0.42\" />"
+  "controlStyles[0].styles[6]": "OpacityTransition@InactiveNormal:=<ScalarTransition Duration=\"0:0:0.42\" />",
+  "controlStyles[0].styles[7]": "OpacityTransition@ActivePressed:=<ScalarTransition Duration=\"0:0:0.42\" />",
+  "controlStyles[0].styles[8]": "OpacityTransition@ActivePointerOver:=<ScalarTransition Duration=\"0:0:0.42\" />",
+  "controlStyles[1].styles[3]": "Height=39",
+  "controlStyles[3].target": "Taskbar.ExperienceToggleButton#LaunchListButton[AutomationProperties.AutomationId=StartButton] > Taskbar.TaskListButtonPanel > Microsoft.UI.Xaml.Controls.AnimatedVisualPlayer#Icon",
+  "controlStyles[3].styles[0]": "Visibility=1"
 }
