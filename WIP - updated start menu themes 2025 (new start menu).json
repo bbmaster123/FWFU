@@ -14,18 +14,16 @@ No recommended section
   "controlStyles[2].styles[0]": "RenderTransform:=<TranslateTransform  X=\"-100\" Y=\"9\"/>",
   "controlStyles[3].target": "Windows.UI.Xaml.Controls.Button#ShowMoreSuggestionsButton > Grid > Windows.UI.Xaml.Controls.ContentPresenter > Windows.UI.Xaml.Controls.StackPanel > Windows.UI.Xaml.Controls.TextBlock",
   "controlStyles[3].styles[0]": "Text=Recommended",
-  "controlStyles[4].target": "Grid#TopLevelSuggestionsRoot > Grid[2]",
-  "controlStyles[4].styles[0]": "MaxHeight=0",
-  "controlStyles[4].styles[1]": "MinHeight=0",
-  "controlStyles[4].styles[2]": "Opacity=0",
+  "controlStyles[4].target": "Grid#TopLevelSuggestionsRoot > Grid[2] ",
+  "controlStyles[4].styles[0]": "MinHeight=0",
   "controlStyles[5].target": "Grid#TopLevelSuggestionsRoot",
   "controlStyles[5].styles[0]": "Grid.Row=0",
-  "controlStyles[6].target": "Grid#UnderlineContainer",
+  "controlStyles[6].target": "Windows.UI.Xaml.Controls.GridView#RecommendedList",
   "controlStyles[6].styles[0]": "Visibility=Collapsed",
-  "controlStyles[7].target": "Windows.UI.Xaml.Controls.GridView#RecommendedList",
-  "controlStyles[7].styles[0]": "Visibility=Collapsed",
-  "controlStyles[8].target": "TextBlock#PinnedListHeaderText",
-  "controlStyles[8].styles[0]": "RenderTransform:=<TranslateTransform Y=\"8\"/>"
+  "controlStyles[7].target": "TextBlock#PinnedListHeaderText",
+  "controlStyles[7].styles[0]": "RenderTransform:=<TranslateTransform Y=\"8\"/>",
+  "controlStyles[8].target": "GridView",
+  "controlStyles[8].styles[0]": "Margin=0,-8,0,0"
 }
 
 Translucent
