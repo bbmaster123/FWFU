@@ -7,9 +7,9 @@
 
 *To see a video demonstration of the software, please scroll to the bottom of this page
 ##
-> 1. Download the latest version of [UWPspy](https://github.com/m417z/UWPSpy/releases/download/v1.4.1/UWPSpy.zip). Extract both files, and run UWPspy.exe
+> 1. Download the latest version of [UWPspy](https://ramensoftware.com/downloads/uwpspy.zip). Extract both files, and run UWPspy.exe
 >
-> 2. Select the process you'd like to target, choose UWP, and click spy. To target taskbar, choose Explorer.exe, start is StartMenuExperienceHost.exe, settings  is SystemSettings.exe, etc. If you don't see the process you want in the list, first make sure it's running, and then click 
+> 2. Select the process you'd like to target, choose UWP, and click spy. To target taskbar, choose Explorer.exe, start is StartMenuExperienceHost.exe, settings is SystemSettings.exe, etc. If you don't see the process you want in the list, first make sure it's running, and then click 
 > refresh. 
 >
 > ![1](https://github.com/user-attachments/assets/f78896e4-2fa0-49a8-b63b-bd08cec2bb42)
@@ -20,9 +20,9 @@
 >
 > 5. To target a specific element you do not know the name of, make sure UWPspy is the active window, hover your cursor over the element to target, and press CTRL+D. This will make UWPspy jump to that element
 >
-> 6. Once you have found the element you'd like to style, take note of which styles are avaible to that target. Each target may or may not support a given style. For example, an icon might have the Glyph style, but a BackgroundElement will not.
+> 6. Once you have found the element you'd like to style, take note of which styles are available to that target. Each target may or may not support a given style. For example, an icon might have the Glyph style, but a BackgroundElement will not.
 >
-> 7. Some (but not all) elements have Visual States. This can include common states (Active, Inactive, PointerOver, etc) and unique states (RunningIndicatorStates, ResizeEnabled, Dragging, etc). Common visual states are shared across serveral elements, while unique states may only be for one specific target or group of targets (Ex. MultiWindowActive). To see which states a target might have, click the visual states tab on the right.  
+> 7. Some (but not all) elements have Visual States. This can include common states (Active, Inactive, PointerOver, etc) and unique states (RunningIndicatorStates, ResizeEnabled, Dragging, etc). Common visual states are shared across several elements, while unique states may only be for one specific target or group of targets (Ex. MultiWindowActive). To see which states a target might have, click the visual states tab on the right.  
 >
 >![3](https://github.com/user-attachments/assets/c7772887-6936-49cd-bcb3-e295905db361)
 >
@@ -32,7 +32,7 @@
 >
 > *Enable the Detailed Property List checkbox at the bottom to see all styles. Once you are done looking through the list of styles and testing values, we can transfer that into the styler mod. 
 >
-> 8. To target the same element in the styler mod with the same styles, we first need the name of the target. to get this, look at the top right, you'll notice Class: and Name:
+> 8. To target the same element in the styler mod with the same styles, we first need the name of the target. To get this, look at the top right, you'll notice Class: and Name:
 > Use the class, followed by # and then the name (Class#Name)
 >
 >![4](https://github.com/user-attachments/assets/b97e7a3a-6cdf-4cd9-87ce-69b56dd9eb26)
@@ -55,17 +55,17 @@
 - Why am I getting an error when I click Set?
 > Either the styler mod was active when you started using UWPspy, or that style cannot be set with UWPspy. If the first thing, disable your styler mod, restart explorer, and try again 
 - How do you get the targets for elements that disappear when you click away? (Ex. Menus, toasts, SnapLayout, etc) 
-> If you are unable to CTRL+D to jump to your target, the best way would be to enlarge UWPspy so it has lots of space to show the visual tree, then bring up the element. You will see the visual tree update, and the targets will appear until you click away. Screenshot the window, paste 
+> Use the "Sticky" checkbox at the bottom right. However, if you are still unable to CTRL+D to jump to your target, the best way would be to enlarge UWPspy so it has lots of space to show the visual tree, then bring up the element. You will see the visual tree update, and the targets will appear until you click away. Screenshot the window, paste 
 > somewhere, and work from that. 
 - I was playing around, but I messed things up. How do I reset?
 >  restart explorer
 - Does this work on Windows 10?
 >  UWPspy works, styler mods depend on which app you are trying to style. Taskbar Styler does not work. Notification Center Styler works, and you can fork it and change the includes (@include app.exe) to work with more windows 10 UWP apps
-- I'm trying to move my element, but its dissapearing behind an invisible line/border/edge? I just want (element) on the (position)! (Ex. Start Menu on the right) 
-> Elements can have a bounding box. This s pre-defined region where the element may appear, and not outside that space. If you try to move your element outside this defined region, it will begin to get cut off until it dissapears. There is no way around this unless you create a 
+- I'm trying to move my element, but its disappearing behind an invisible line/border/edge? I just want (element) on the (position)! (Ex. Start Menu on the right) 
+> Elements can have a bounding box. This s pre-defined region where the element may appear, and not outside that space. If you try to move your element outside this defined region, it will begin to get cut off until it disappears. There is no way around this unless you create a 
 > completely new mod. (Ex Taskbar on left mod)
 - I'm having trouble/I don't get something. Can you help me?
-> Of course! Just create a new issue in the appropriate styler guide repo. Please do try to make sure its not something that has been answered doezens of times before. Read through some of the open and closed issues to see if maybe your question has already been answered or explained. 
+> Of course! Just create a new issue in the appropriate styler guide repo. Please do try to make sure its not something that has been answered dozens of times before. Read through some of the open and closed issues to see if maybe your question has already been answered or explained. 
 - Okay I found my target(s), but how do I actually know what to set for my styles?
 > See the [styling guide](https://github.com/ramensoftware/windows-11-taskbar-styling-guide)
 
