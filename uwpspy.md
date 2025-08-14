@@ -7,7 +7,7 @@
 
 *To see a video demonstration of the software, please scroll to the bottom of this page
 ##
-> 1. Download the latest version of [UWPspy](https://ramensoftware.com/downloads/uwpspy.zip). Extract both files, and run UWPspy.exe
+> 1. Download the latest version of [UWPspy](https://github.com/m417z/UWPSpy/releases/download/v1.4.1/UWPSpy.zip). Extract both files, and run UWPspy.exe
 >
 > 2. Select the process you'd like to target, choose UWP, and click spy. To target taskbar, choose Explorer.exe, start is StartMenuExperienceHost.exe, settings  is SystemSettings.exe, etc. If you don't see the process you want in the list, first make sure it's running, and then click 
 > refresh. 
