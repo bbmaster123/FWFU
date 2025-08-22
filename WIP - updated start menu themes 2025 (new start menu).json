@@ -938,7 +938,6 @@ Fluent2Inspired
 }
 
 DownAero
-- recommended button only visible when pinned list is expanded
 
 {
   "controlStyles[0].target": "Grid#FrameRoot",
@@ -946,7 +945,6 @@ DownAero
   "controlStyles[1].target": "Windows.UI.Xaml.Controls.Grid#TopLevelSuggestionsListHeader",
   "controlStyles[1].styles[0]": "Visibility=Collapsed",
   "controlStyles[2].target": "Button#ShowMoreSuggestionsButton",
-  "controlStyles[2].styles[0]": "RenderTransform:=<TranslateTransform X=\"-92\" Y=\"-576\" />",
   "controlStyles[3].target": "Windows.UI.Xaml.Controls.Grid#NoTopLevelSuggestionsText",
   "controlStyles[3].styles[0]": "Height=0",
   "controlStyles[4].target": " Button#ShowMoreSuggestionsButton > Grid > ContentPresenter > StackPanel > TextBlock",
@@ -972,7 +970,6 @@ DownAero
   "controlStyles[11].styles[0]": "Grid.Row=0",
   "controlStyles[11].styles[1]": "VerticalAlignment=0",
   "controlStyles[11].styles[2]": "MinHeight=Auto",
-  "controlStyles[11].styles[3]": "Padding=0",
   "controlStyles[12].target": "StartDocked.AppListView#NavigationPanePlacesListView > Windows.UI.Xaml.Controls.Border",
   "controlStyles[12].styles[0]": "Background:=<AcrylicBrush TintColor=\"{ThemeResource CardStrokeColorDefaultSolid}\" FallbackColor=\"{ThemeResource CardStrokeColorDefaultSolid}\" TintOpacity=\"0\" TintLuminosityOpacity=\".5\" Opacity=\"1\"/>",
   "controlStyles[12].styles[1]": "CornerRadius=18",
@@ -1027,7 +1024,12 @@ DownAero
   "controlStyles[24].target": "Windows.UI.Xaml.Controls.GridView#AllAppsGrid > Border > Windows.UI.Xaml.Controls.ScrollViewer > Border > Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid",
   "controlStyles[24].styles[0]": "Margin=45,-180,45,0",
   "controlStyles[25].target": "Microsoft.UI.Xaml.Controls.DropDownButton",
-  "controlStyles[25].styles[0]": "Margin=45,-200,45,200"
+  "controlStyles[25].styles[0]": "Margin=45,-200,45,200",
+  "controlStyles[2].styles[0]": "Margin=0,-77,147,0",
+  "controlStyles[26].target": "StartMenu.PinnedList",
+  "controlStyles[26].styles[0]": "Margin=-8,20,-40,180",
+  "controlStyles[27].styles[0]": "Grid.Row=1",
+  "controlStyles[27].target": "Grid#TopLevelSuggestionsRoot"
 }
 
 OnlySearch
