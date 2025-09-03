@@ -1763,7 +1763,7 @@ SideBySideMinimal
   "controlStyles[3].styles[0]": "Height=0",
   "controlStyles[3].styles[1]": "Width=0",
   "controlStyles[4].target": "StartDocked.PowerOptionsView",
-  "controlStyles[4].styles[0]": "Margin=-528,0,0,0",
+  "controlStyles[4].styles[0]": "Margin=-528,2,0,0",
   "controlStyles[5].target": "StartDocked.UserTileView",
   "controlStyles[5].styles[0]": "Visibility=Collapsed",
   "controlStyles[6].target": "StartMenu.PinnedList",
@@ -1791,16 +1791,16 @@ SideBySideMinimal
   "controlStyles[14].styles[2]": "MinHeight=504",
   "controlStyles[15].target": "GridView#AllAppsGrid > Border > ScrollViewer > Border > Grid > ScrollContentPresenter > ItemsPresenter > ItemsWrapGrid",
   "controlStyles[14].styles[3]": "RenderTransform:=<TranslateTransform X=\"270\" Y=\"585\"/>",
-  "controlStyles[15].styles[0]": "Width=270",
+  "controlStyles[15].styles[0]": "Width=250",
   "controlStyles[16].styles[0]": "RenderTransform:=<TranslateTransform X=\"-150\" Y=\"-600\"/>",
   "controlStyles[16].target": "GridView#AllAppsGrid > Border > ScrollViewer > Border > Grid > ScrollContentPresenter > ItemsPresenter",
   "controlStyles[17].target": "Microsoft.UI.Xaml.Controls.DropDownButton",
-  "controlStyles[17].styles[0]": "Margin=-200,4,200,-4",
+  "controlStyles[17].styles[0]": "Margin=-174,4,174,0",
   "controlStyles[17].styles[1]": "FontWeight=SemiBold",
   "controlStyles[17].styles[2]": "Height=32",
-  "controlStyles[17].styles[3]": "Width=240",
+  "controlStyles[17].styles[3]": "Width=250",
   "controlStyles[18].target": "Windows.UI.Xaml.Controls.ListView#ZoomedOutListView",
-  "controlStyles[18].styles[0]": "Margin=0,-35,0,35",
+  "controlStyles[18].styles[0]": "Margin=0,-50,0,50",
   "controlStyles[19].target": "TextBlock#PinnedListHeaderText",
   "controlStyles[19].styles[0]": "Visibility=Visible",
   "controlStyles[19].styles[1]": "RenderTransform:=<TranslateTransform X=\"400\" Y=\"580.5\"/>",
@@ -1814,7 +1814,10 @@ SideBySideMinimal
   "controlStyles[22].styles[1]": "TextLineBounds=0",
   "controlStyles[22].styles[2]": "HorizontalAlignment=1",
   "controlStyles[23].target": "Grid#TopLevelSuggestionsRoot",
-  "controlStyles[23].styles[0]": "Visibility=Collapsed"
+  "controlStyles[23].styles[0]": "Visibility=Collapsed",
+  "controlStyles[17].styles[4]": "Style:=",
+  "controlStyles[24].target": "StartMenu.CategoryControl",
+  "controlStyles[24].styles[0]": "Margin=20,20,-20,-20"
 }
 
 SideBySide
