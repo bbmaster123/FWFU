@@ -71,7 +71,7 @@
   "controlStyles[22].styles[1]": "Background@InactiveRunningIndicator:=<AcrylicBrush TintOpacity=\"0.8\" TintColor=\"Black\" />",
   "controlStyles[22].styles[2]": "Background@InactiveRunningIndicatorPointerOver:=<AcrylicBrush TintOpacity=\"0.8\" TintColor=\"Black\" />",
   "controlStyles[22].styles[3]": "CornerRadius=5",
-  "controlStyles[22].styles[4]": "Margin=0"
+  "controlStyles[22].styles[4]": "Margin=0",
   "controlStyles[23].target": "taskbar:TaskListLabeledButtonPanel@CommonStates > Border#BackgroundElement",
   "controlStyles[23].styles[0]": "Background@InactivePointerOver:=<AcrylicBrush TintOpacity=\"0.8\" TintColor=\"Red\" FallbackColor=\"#DD222222\" />",
   "controlStyles[23].styles[1]": "Background@ActivePointerOver:=<AcrylicBrush TintOpacity=\"0.8\" TintColor=\"Black\" FallbackColor=\"#EE222222\" />",
