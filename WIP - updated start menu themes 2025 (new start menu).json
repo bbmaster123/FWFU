@@ -1625,7 +1625,7 @@ LegacyFluent
   "controlStyles[13].target": "Windows.UI.Xaml.Controls.TextBlock#AllListHeadingText",
   "controlStyles[13].styles[0]": "Text=All apps",
   "controlStyles[14].target": "Grid#FrameRoot",
-  "controlStyles[14].styles[0]": "Height=670",
+  "controlStyles[14].styles[0]": "MaxHeight=650",
   "controlStyles[15].target": "Cortana.UI.Views.HostedWebViewControl#QueryFormulationHostedWebView",
   "controlStyles[15].styles[0]": "Background:=<AcrylicBrush TintColor=\"{ThemeResource SystemChromeMediumColor}\" TintOpacity=\"1\" TintLuminosityOpacity=\"1\" FallbackColor=\"{ThemeResource SystemChromeLowColor}\" />",
   "controlStyles[16].target": "Windows.UI.Xaml.Controls.Grid#QueryFormulationRoot",
@@ -1658,7 +1658,10 @@ LegacyFluent
   "controlStyles[26].styles[5]": "Padding=0",
   "controlStyles[26].styles[6]": "Margin=0,1,-12,0",
   "controlStyles[27].target": "StartMenu.StartHome",
-  "controlStyles[27].styles[0]": "Margin=0,-10,0,0"
+  "controlStyles[27].styles[0]": "Margin=0,-10,0,0",
+  "controlStyles[28].target": "Windows.UI.Xaml.Controls.Primitives.ScrollBar",
+  "controlStyles[28].styles[0]": "Height=550",
+  "controlStyles[28].styles[1]": "Margin=0,2,0,-2"
 }
 
 Windows11_Metro10
