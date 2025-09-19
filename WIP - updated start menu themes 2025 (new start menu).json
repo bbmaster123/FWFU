@@ -1540,7 +1540,7 @@ LegacyFluent
   "webContentStyles[2].styles[0]": "font-family: Segoe UI !important",
   "webContentStyles[3].target": ".cortanaFontIcon, .iconContent",
   "webContentStyles[3].styles[0]": "font-family: Segoe MDL2 Assets !important",
-  "controlStyles[60].target": "Button",
+  "controlStyles[60].target": "Windows.UI.Xaml.Controls.Button#ShowMoreSuggestionsButton ",
   "controlStyles[60].styles[0]": "Style:=<Style x:Key=\"RevealButtonStyle\" TargetType=\"Button\" />",
   "controlStyles[61].target": "Button#CloseStartAccessibleButton",
   "controlStyles[61].styles[0]": "Visibility=Collapsed",
@@ -1558,7 +1558,18 @@ LegacyFluent
   "controlStyles[64].styles[1]": "BorderThickness=1",
   "controlStyles[64].styles[2]": "CornerRadius=0",
   "controlStyles[64].styles[3]": "Margin=0",
-  "controlStyles[11].styles[2]": "Margin=78,-4,0,4"
+  "controlStyles[11].styles[2]": "Margin=78,-4,0,4",
+  "controlStyles[64].styles[4]": "Background@PointerOver:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.7\"/>",
+  "controlStyles[65].target": "Button#Header",
+  "controlStyles[65].styles[0]": "Style:=",
+  "controlStyles[66].target": "Windows.UI.Xaml.Controls.ListView#ZoomedOutListView",
+  "controlStyles[66].styles[0]": "Margin=0,-150,0,0",
+  "controlStyles[67].target": "Windows.UI.Xaml.Controls.ListViewItem > Grid#ContentBorder@CommonStates > Border",
+  "controlStyles[67].styles[0]": "Background@PointerOver:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.7\"/>",
+  "controlStyles[67].styles[1]": "BorderBrush@PointerOver:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"1\"/>",
+  "controlStyles[67].styles[2]": "Background@Pressed:=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.7\"/>",
+  "controlStyles[67].styles[3]": "Background@Pressed=<RevealBorderBrush Color=\"Transparent\" TargetTheme=\"1\" Opacity=\"0.7\"/>",
+  "controlStyles[65].styles[1]": "Height=40"
 }
 
 21996
