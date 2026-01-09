@@ -10,6 +10,25 @@
 // @compilerOptions -lole32 -loleaut32 -lruntimeobject
 // ==/WindhawkMod==
 
+// ==WindhawkModSettings==
+/*
+- videoUrl: "https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4"
+  $name: Video URL
+  $description: The URL of the video to play on the taskbar
+
+- volume: 50
+  $name: Volume
+  $description: Volume level (0-100)
+
+- loopVideo: true
+  $name: Loop Video
+  $description: Whether the video should loop or not
+
+*/
+// ==/WindhawkModSettings==
+
+
+
 // ==WindhawkModReadme==
 /*
 # Taskbar video Injector
@@ -19,6 +38,8 @@ show a video player with cover image and clickable controls, so only a matter of
 
 */
 // ==/WindhawkModReadme==
+
+
 
 #include <windhawk_utils.h>
 
@@ -31,7 +52,9 @@ show a video player with cover image and clickable controls, so only a matter of
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Storage.Streams.h>
-#include <shcore.h> // for CreateRandomAccessStreamOverStream
+#include <winrt/Windows.Media.Core.h>
+#include <winrt/Windows.Media.Playback.h>
+
 
 #include <atomic>
 #include <string>
@@ -44,7 +67,7 @@ using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Data;
 using namespace winrt::Windows::UI::Xaml::Media;
 using namespace winrt::Windows::Foundation;
-using namespace winrt::Windows::Storage::Streams;
+using namespace winrt::Windows::Media::Playback;
 
 
 // Global state tracking
@@ -133,7 +156,7 @@ void extracted() {
     return;
 }
 void InjectGridInsideTargetGrid(FrameworkElement element) {
-    // Ensure the element IS a Grid
+    // Ensure the element is a Grid
     auto targetGrid = element.try_as<Controls::Grid>();
     if (!targetGrid) return;
 
@@ -151,26 +174,53 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
     injected.HorizontalAlignment(HorizontalAlignment::Stretch);
     injected.VerticalAlignment(VerticalAlignment::Stretch);
     injected.Width(NAN);
-    injected.Height(NAN);   
+    injected.Height(NAN);
 
+    // Fetch settings dynamically from Windhawk
+    std::wstring videoUrl = Wh_GetStringSetting(L"videoUrl");
+    if (videoUrl.empty()) {
+        videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4"; // Default video URL
+    }
+    int volumeInt = Wh_GetIntSetting(L"volume"); // Get volume as an integer (0-100)
+    if (volumeInt < 0 || volumeInt > 100) {
+        volumeInt = 50; // Default volume to 50 if out of range
+    }
+    float volume = volumeInt / 100.0f;  // Convert to a float between 0.0 and 1.0
+    bool loop = Wh_GetIntSetting(L"loop") > 0; // Assume loop is a boolean stored as 0 (false) or 1 (true)
 
+    // Create a MediaPlayer
+    Controls::MediaPlayerElement player;
+    player.AreTransportControlsEnabled(false);
+    player.AutoPlay(true);
+    player.Stretch(Stretch::UniformToFill);
 
+    // Set the video URL dynamically from settings
+    auto mediaPlayer = winrt::Windows::Media::Playback::MediaPlayer();
+    mediaPlayer.Source(
+        winrt::Windows::Media::Core::MediaSource::CreateFromUri(
+            winrt::Windows::Foundation::Uri(videoUrl)  // Apply the dynamic URL
+        )
+    );
 
+    // Set volume and loop settings
+    mediaPlayer.Volume(volume); // Apply volume (0.0 to 1.0)
+    mediaPlayer.IsLoopingEnabled(loop); // Apply looping setting
 
-    // Create a MediaElement
-    Controls::MediaElement media;
-    media.Source(winrt::Windows::Foundation::Uri(L"file:///C://users//admin//videos//test.mp4"));
-    media.AutoPlay(false);
-    media.AreTransportControlsEnabled(false);
-    media.HorizontalAlignment(HorizontalAlignment::Stretch);
-    media.VerticalAlignment(VerticalAlignment::Stretch);
+    // Explicitly restart video to ensure it loops
+    if (loop) {
+        mediaPlayer.Play();  // Restart the video to make sure it's looping
+    }
 
-     // Add injected Grid to the target Grid
-    targetGrid.Children().Append(injected); 
+    player.SetMediaPlayer(mediaPlayer);
 
-    // Add MediaElement to the injected Grid
-    injected.Children().Append(media);   
+    // Add the injected Grid to the target Grid
+    targetGrid.Children().Append(injected);
+
+    // Add the MediaElement to the injected Grid
+    injected.Children().Append(player);
 }
+
+
 
 
 
@@ -210,6 +260,9 @@ void EnsureGlobalScanFromElement(FrameworkElement startNode) {
             current = parent.try_as<FrameworkElement>();
         }
     } catch (...) {}
+
+    // If not found, force a global scan immediately.
+    ScanAndInjectRecursive(startNode);
 }
 
 // -------------------------------------------------------------------------
@@ -326,13 +379,42 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dw
     return module;
 }
 
-BOOL Wh_ModInit() {
+
+void OnSettingsChanged() {
+    // This function should be called whenever settings are changed
+    std::wstring videoUrl = Wh_GetStringSetting(L"videoUrl");
+    int volumeInt = Wh_GetIntSetting(L"volume");
+    bool loop = Wh_GetIntSetting(L"loop") > 0;
+
+    // Log settings to ensure they're applied
+    Wh_Log(L"Updated Settings - Video URL: %s, Volume: %d, Loop: %d", videoUrl.c_str(), volumeInt, loop);
+
+    // Ensure the player is updated with the new settings
+    if (g_cachedTaskbarFrame.get()) {
+        auto taskbarFrame = g_cachedTaskbarFrame.get();
+        ScanAndInjectRecursive(taskbarFrame);  // Refresh UI with new settings
+    }
+}
+
+// You should ensure this function is triggered when settings change, such as when the user clicks "Save".
+
+
+bool Wh_ModInit() {
     Wh_Log(L"Initializing Taskbar Injector Mod v1.6");
 
     if (HMODULE taskbarViewModule = GetTaskbarViewModuleHandle()) {
         g_taskbarViewDllLoaded = true;
         if (!HookTaskbarViewDllSymbols(taskbarViewModule)) {
             return FALSE;
+        }
+        
+        // Trigger a global scan immediately after the taskbar is initialized
+        EnsureGlobalScanFromElement(nullptr);
+
+        // Inject the video immediately if it hasn't already been injected
+        if (g_cachedTaskbarFrame.get()) {
+            auto taskbarFrame = g_cachedTaskbarFrame.get();
+            ScanAndInjectRecursive(taskbarFrame);  // Force the scan and injection
         }
     } else {
         HMODULE kernelBaseModule = GetModuleHandle(L"kernelbase.dll");
@@ -342,6 +424,8 @@ BOOL Wh_ModInit() {
 
     return TRUE;
 }
+
+
 
 void Wh_ModUninit() {
     Wh_Log(L"Uninitializing Taskbar Injector Mod");
@@ -358,11 +442,9 @@ void Wh_ModUninit() {
             if (dispatcher.HasThreadAccess()) {
                 RemoveInjectedFromPanel(panel);
             } else {
-                try {
-                    dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [panel]() {
-                        RemoveInjectedFromPanel(panel);
-                    }).get();
-                } catch (...) {}
+                dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [panel]() {
+                    RemoveInjectedFromPanel(panel);
+                }).get();
             }
         }
     }    
