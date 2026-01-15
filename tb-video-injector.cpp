@@ -16,7 +16,7 @@
   $name: Video URL
   $description: The URL of the video to play on the taskbar
 
-- loopVideo: true
+- loop: true
   $name: Loop Video
   $description: Whether the video should loop or not
 */
@@ -43,7 +43,7 @@ bugs remaining:
 */
 // ==/WindhawkModReadme==
 
-#include <windhawk_utils.h>
+#include <windhawk_utils.h> 
 
 // Fix for conflict between Windows macro and WinRT method names
 #undef GetCurrentTime
@@ -61,6 +61,10 @@ bugs remaining:
 #include <string>
 #include <vector>
 #include <mutex>
+
+#include <Unistd.h>
+#include <windows.h>
+#include <shlobj.h>
 
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Controls;
@@ -95,13 +99,11 @@ using TaskbarFrame_TaskbarFrame_t = void*(WINAPI*)(void* pThis);
 TaskbarFrame_TaskbarFrame_t TaskbarFrame_TaskbarFrame_Original;
 
 void WINAPI TaskbarFrame_TaskbarFrame_Hook(void* pThis) {
-    // Custom logic to inject video or interact with taskbar elements
-    // You can modify the taskbar's appearance or play the video as needed
-    Wh_Log(L"TaskbarFrame Hooked!");
-    
+      Wh_Log(L"TaskbarFrame Hooked!");    
     // Call the original function to maintain functionality
-    TaskbarFrame_TaskbarFrame_Original(pThis);
+    TaskbarFrame_TaskbarFrame_Original(pThis);   
 }
+
 TaskListButton_UpdateVisualStates_t TaskListButton_UpdateVisualStates_Original;
 // -------------------------------------------------------------------------
 // Helpers
@@ -129,9 +131,7 @@ void RegisterGridForCleanup(Controls::Grid const& grid) {
     auto it = g_trackedGrids.begin();
     while (it != g_trackedGrids.end()) {
         auto existing = it->ref.get();
-        if (!existing) {
-            it = g_trackedGrids.erase(it);
-        } else {
+        {
             if (winrt::get_abi(existing) == pAbi) {
                 return; // Already tracked
             }
@@ -157,9 +157,11 @@ void extracted() {
     return;
 }
 void InjectGridInsideTargetGrid(FrameworkElement element) {
-    // Ensure the element is a Grid
     auto targetGrid = element.try_as<Controls::Grid>();
     if (!targetGrid) return;
+
+    // Register for cleanup so Uninit knows where to look!
+    RegisterGridForCleanup(targetGrid);
 
     // Prevent duplicates
     for (auto child : targetGrid.Children()) {
@@ -180,8 +182,6 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
     // Fetch settings dynamically from Windhawk
 
     std::string ResolveVideoUrl(std::string url); 
- 
-
     std::wstring videoUrl = Wh_GetStringSetting(L"videoUrl");
     if (videoUrl.empty()) {
         videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4"; // Default video URL
@@ -191,8 +191,7 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
         return;  // Already a local path
     } else {
        L"file:///" + videoUrl;  // Convert to local file URI format
-    }
-    
+    }    
 
     bool loop = Wh_GetIntSetting(L"loop") == 1; // Assume loop is a boolean stored as 0 (false) or 1 (true)
     Wh_Log(L"Video URL: %s, Loop Setting: %d", videoUrl.c_str(), loop);
@@ -208,7 +207,7 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
     );
 
     // Set loop settings   
-    mediaPlayer.IsLoopingEnabled(true);  // Apply looping
+    mediaPlayer.IsLoopingEnabled(loop);  // Apply looping
     mediaPlayer.IsMuted(true);
     Wh_Log(L"MediaPlayer LoopingEnabled: %d", mediaPlayer.IsLoopingEnabled());
 
@@ -224,9 +223,7 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
         Wh_Log(L"Not on UI thread, posting to UI thread.");
         // If not on UI thread, run asynchronously on the UI thread
         dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [targetGrid, injected, player]() {
-            // Add the injected Grid to the target Grid
-            targetGrid.Children().Append(injected);
-
+           
             // Add the MediaPlayerElement to the injected Grid
             injected.Children().Append(player);
 
@@ -245,7 +242,7 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
     }
 }
 
-void ScanAndInjectRecursive(FrameworkElement element) {
+void ScanAndInject(FrameworkElement element) {
     if (!element) return;
 
     auto className = winrt::get_class_name(element);
@@ -260,7 +257,7 @@ void ScanAndInjectRecursive(FrameworkElement element) {
         auto childDependencyObject = Media::VisualTreeHelper::GetChild(element, i);
         auto child = childDependencyObject.try_as<FrameworkElement>();
         if (child) {
-            ScanAndInjectRecursive(child);
+            ScanAndInject(child);           
         }
     }
 }
@@ -274,7 +271,7 @@ void EnsureGlobalScanFromElement(FrameworkElement startNode) {
             auto className = winrt::get_class_name(current);
             if (className == c_RootFrameName) {
                 g_cachedTaskbarFrame = winrt::make_weak(current);
-                ScanAndInjectRecursive(current);
+                ScanAndInject(current);
                 return;
             }
             auto parent = Media::VisualTreeHelper::GetParent(current);
@@ -283,7 +280,7 @@ void EnsureGlobalScanFromElement(FrameworkElement startNode) {
     } catch (...) {}
 
     // If not found, force a global scan immediately.
-    ScanAndInjectRecursive(startNode);
+    ScanAndInject(startNode);
 }
 // -------------------------------------------------------------------------
 // Cleanup Helpers
@@ -304,7 +301,6 @@ void RemoveInjectedFromGrid(Controls::Grid grid) {
     } catch (...) {}
 }
 
-
 // -------------------------------------------------------------------------
 // Hooks
 // -------------------------------------------------------------------------
@@ -313,7 +309,7 @@ void RemoveInjectedFromGrid(Controls::Grid grid) {
 void InjectForElement(void* pThis) {
     try {
         if (auto elem = GetFrameworkElementFromNative(pThis)) {
-            ScanAndInjectRecursive(elem);
+            ScanAndInject(elem);
             if (!g_cachedTaskbarFrame.get()) {
                 EnsureGlobalScanFromElement(elem);
             }
@@ -326,38 +322,27 @@ void WINAPI TaskListButton_UpdateVisualStates_Hook(void* pThis) {
     InjectForElement(pThis);
 }
 
-
 // -------------------------------------------------------------------------
 // Initialization Logic
 // -------------------------------------------------------------------------
 
 bool HookTaskbarViewDllSymbols(HMODULE module) {
-    // Taskbar.View.dll
-    WindhawkUtils::SYMBOL_HOOK taskbarViewHooks[] = {     
+    WindhawkUtils::SYMBOL_HOOK hooks[] = {
         {
-            {
-                LR"(private: void __cdecl winrt::Taskbar::implementation::TaskListButton::UpdateVisualStates(void))",
-                 LR"(private: void __cdecl winrt::Taskbar::implementation::TaskbarFrame::TaskbarFrame(void))", 
-            },
-            
+            {LR"(private: void __cdecl winrt::Taskbar::implementation::TaskListButton::UpdateVisualStates(void))"},
             (void**)&TaskListButton_UpdateVisualStates_Original,
-            (void*)TaskListButton_UpdateVisualStates_Hook,           
-      
-        },  
-        
-    
-};
-
-
-    if (!HookSymbols(module, taskbarViewHooks, ARRAYSIZE(taskbarViewHooks))) {
-        Wh_Log(L"Failed to hook Taskbar.View.dll symbols");
-        return false;
-    }
-
-    return true;
+            (void*)TaskListButton_UpdateVisualStates_Hook
+        },
+        {
+            {LR"(public: __cdecl winrt::Taskbar::implementation::TaskbarFrame::TaskbarFrame(void))"},
+            (void**)&TaskbarFrame_TaskbarFrame_Original,
+            (void*)TaskbarFrame_TaskbarFrame_Hook
+        }
+    };
+    return HookSymbols(module, hooks, ARRAYSIZE(hooks));
 }
 
-HMODULE GetTaskbarViewModuleHandle() {
+HMODULE GetTaskbarViewModuleHandle() {    
     HMODULE module = GetModuleHandle(L"Taskbar.View.dll");
     if (!module) {
         module = GetModuleHandle(L"ExplorerExtensions.dll");
@@ -386,40 +371,55 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dw
         HandleLoadedModuleIfTaskbarView(module, lpLibFileName);
     }
     return module;
+    
 }
 
+// --- REPLACE OnSettingsChanged WITH THIS ---
 void OnSettingsChanged() {
-     Wh_Log(L"SettingsChanged");
-    std::wstring videoUrl = Wh_GetStringSetting(L"videoUrl");
-    bool loop = Wh_GetIntSetting(L"loop") == 1;
-
-    // Log settings to ensure they're applied
-    Wh_Log(L"Updated Settings - Video URL: %s, Loop: %d", videoUrl.c_str(), loop);
-
-    // Ensure the player is updated with the new settings
-    if (g_cachedTaskbarFrame.get()) {
-        auto taskbarFrame = g_cachedTaskbarFrame.get();
-        ScanAndInjectRecursive(taskbarFrame);  // Refresh UI with new settings
+    Wh_Log(L"Settings changed. Refreshing Video...");
+    
+    // We use the cached frame to trigger a re-scan
+    auto frame = g_cachedTaskbarFrame.get();
+    if (!frame) {
+        Wh_Log(L"No cached frame found. Flickering taskbar to force update...");
+        HWND hwnd = FindWindowW(L"Shell_TrayWnd", NULL);
+        if (hwnd) PostMessage(hwnd, WM_SETTINGCHANGE, 0, 0);
+        return;
     }
-} 
+
+    auto dispatcher = frame.Dispatcher();
+    dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [frame]() {
+        // 1. Remove old injected grids
+        std::lock_guard<std::mutex> lock(g_gridMutex);
+        for (auto& tracked : g_trackedGrids) {
+            if (auto grid = tracked.ref.get()) {
+                RemoveInjectedFromGrid(grid);
+            }
+        }
+        g_trackedGrids.clear();
+        
+        // 2. Re-run the scan with new settings
+        ScanAndInject(frame);
+    });
+}
 
 BOOL Wh_ModInit() {
     Wh_Log(L"Initializing Taskbar Video");
 
-    if (HMODULE taskbarViewModule = GetTaskbarViewModuleHandle()) {
+    HMODULE module = GetTaskbarViewModuleHandle();
+
+    if (module) {
         g_taskbarViewDllLoaded = true;
-        if (!HookTaskbarViewDllSymbols(taskbarViewModule)) {
-            Wh_Log(L"symbols not hooked");
-            return FALSE;
+        if (HookTaskbarViewDllSymbols(module)) {
+            Wh_ApplyHookOperations();
+            Wh_Log(L"Hooks applied successfully");
         }
     } else {
-        HMODULE kernelBaseModule = GetModuleHandle(L"kernelbase.dll");
-        auto pKernelBaseLoadLibraryExW = (decltype(&LoadLibraryExW))GetProcAddress(kernelBaseModule, "LoadLibraryExW");
-        Wh_Log(L"load library");
-        WindhawkUtils::Wh_SetFunctionHookT(pKernelBaseLoadLibraryExW, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
-        Wh_Log(L"utils");
+        // Fallback: Hook LoadLibrary if the DLL isn't there yet
+        WindhawkUtils::Wh_SetFunctionHookT(LoadLibraryExW, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
+        Wh_Log(L"Waiting for Taskbar.View.dll to load...");
     }
-Wh_Log(L"return true");
+
     return TRUE;
     
 }
@@ -431,26 +431,21 @@ void Wh_ModUninit() {
     {
         std::lock_guard<std::mutex> lock(g_gridMutex);
         localGrids = std::move(g_trackedGrids);
-        Wh_Log(L"grid tracked");
     }
     
-    for (auto& tracked : localGrids) {
-        if (auto grid = tracked.ref.get()) {
-            auto dispatcher = grid.Dispatcher();
-            if (dispatcher.HasThreadAccess()) {
-                Wh_Log(L"has access to thread");
-                RemoveInjectedFromGrid(grid);
-                Wh_Log(L"removed");
-            } else {
+    for (auto& tracked : localGrids) {        
+        if (auto grid = tracked.ref.get()) {           
+            auto dispatcher = grid.Dispatcher();           
+            if (dispatcher.HasThreadAccess()) {              
+                RemoveInjectedFromGrid(grid);                
+            } else {              
                 try {
-                    dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [grid]() {
-                        RemoveInjectedFromGrid(grid);
-                        Wh_Log(L"removed async");
+                    dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [grid]() {   
+                        RemoveInjectedFromGrid(grid);                        
                     }).get();
-                } catch (...) {}
+                } catch (...) {Wh_Log(L"not removed correctly");}
             }
         }
-    }
-    
+    }    
     g_cachedTaskbarFrame = nullptr;
 }
