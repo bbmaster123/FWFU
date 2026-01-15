@@ -2,8 +2,8 @@
 // @id              taskbar-video-injector
 // @name            Taskbar Video Injector
 // @description     Injects a video player into Taskbar's Grid#RootGrid Element, intended as background video but could also be made into a popup video player
-// @version         0.1
-// @author          Bbmaster123 (but actually 65% Lockframe, 20% GPT5, 20% me)
+// @version         0.2
+// @author          Bbmaster123 (but actually 60% Lockframe, 25% GPT5, 15% me)
 // @github          https://github.com/bbmaster123
 // @include         explorer.exe
 // @architecture    x86-64
@@ -26,8 +26,8 @@
 /*
 # Taskbar video Injector
 
-This mod acts as an addon to the [Windows 11 Taskbar Styler mod](https://windhawk.net/mods/windows-11-taskbar-styler), enabling video to be played on the taskbar. The mod doesn't fully work yet, but does 
-display video on the taskbar, so only a matter of time until the bugs are fixed. 
+This mod acts as an addon to the [Windows 11 Taskbar Styler mod](https://windhawk.net/mods/windows-11-taskbar-styler), enabling video to be played on the taskbar. The mod works, but does 
+have some bugs. Also requires styles from video-tb.json to be applied in taskbar styler for now.
 
 -added local file support via filepath (eg. C:\users\admin\videos\test.mp4)
 -fixed looping
@@ -35,17 +35,13 @@ display video on the taskbar, so only a matter of time until the bugs are fixed.
 -removed old and unused code
 
 bugs remaining:
--setting wont apply until full refresh (restart explorer, restart mod, click tasbar)
--video now ALWAYS loops (might just remove the option and leave it as always loop)
--video does not remove when mod is disabled until restart explorer.exe
--in my vm, video appears to stutter, could be taskbar styler related but unsure
- 
+- does not apply, as well as setting wont apply until you toggle mod off then on, and click tasbar
+- may need to restart explorer.exe 
 */
 // ==/WindhawkModReadme==
 
 #include <windhawk_utils.h> 
 
-// Fix for conflict between Windows macro and WinRT method names
 #undef GetCurrentTime
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -103,12 +99,10 @@ void WINAPI TaskbarFrame_TaskbarFrame_Hook(void* pThis) {
     // Call the original function to maintain functionality
     TaskbarFrame_TaskbarFrame_Original(pThis);   
 }
-
 TaskListButton_UpdateVisualStates_t TaskListButton_UpdateVisualStates_Original;
 // -------------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------------
-
 FrameworkElement GetFrameworkElementFromNative(void* pThis) {
     try {
         void* iUnknownPtr = (void**)pThis + 3;
@@ -127,7 +121,7 @@ void RegisterGridForCleanup(Controls::Grid const& grid) {
     
     std::lock_guard<std::mutex> lock(g_gridMutex);
 
-    // OPTIMIZATION: Prune dead references while scanning for duplicates.
+    //Prune dead references while scanning for duplicates.
     auto it = g_trackedGrids.begin();
     while (it != g_trackedGrids.end()) {
         auto existing = it->ref.get();
@@ -159,8 +153,6 @@ void extracted() {
 void InjectGridInsideTargetGrid(FrameworkElement element) {
     auto targetGrid = element.try_as<Controls::Grid>();
     if (!targetGrid) return;
-
-    // Register for cleanup so Uninit knows where to look!
     RegisterGridForCleanup(targetGrid);
 
     // Prevent duplicates
@@ -180,12 +172,10 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
     injected.Height(NAN);
 
     // Fetch settings dynamically from Windhawk
-
     std::string ResolveVideoUrl(std::string url); 
     std::wstring videoUrl = Wh_GetStringSetting(L"videoUrl");
     if (videoUrl.empty()) {
-        videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4"; // Default video URL
-        
+        videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4"; // Default video URL        
     }
    if (videoUrl.starts_with(L"file://")) {
         return;  // Already a local path
@@ -224,11 +214,11 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
         // If not on UI thread, run asynchronously on the UI thread
         dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [targetGrid, injected, player]() {
            
-            // Add the MediaPlayerElement to the injected Grid
-            injected.Children().Append(player);
+        // Add the MediaPlayerElement to the injected Grid
+        injected.Children().Append(player);
 
-            // Play the media
-            player.MediaPlayer().Play();
+        // Play the media
+        player.MediaPlayer().Play();
         }).get();
     } else {
         // If on the UI thread, proceed directly
@@ -244,14 +234,11 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
 
 void ScanAndInject(FrameworkElement element) {
     if (!element) return;
-
     auto className = winrt::get_class_name(element);
-
     if (className == c_TargetGridLabeled ) {
         InjectGridInsideTargetGrid(element);
         return; 
     }
-
     int childrenCount = Media::VisualTreeHelper::GetChildrenCount(element);
     for (int i = 0; i < childrenCount; i++) {
         auto childDependencyObject = Media::VisualTreeHelper::GetChild(element, i);
@@ -264,7 +251,6 @@ void ScanAndInject(FrameworkElement element) {
 
 void EnsureGlobalScanFromElement(FrameworkElement startNode) {
     if (g_cachedTaskbarFrame.get()) return;
-
     try {
         FrameworkElement current = startNode;
         while (current) {
@@ -278,14 +264,12 @@ void EnsureGlobalScanFromElement(FrameworkElement startNode) {
             current = parent.try_as<FrameworkElement>();
         }
     } catch (...) {}
-
     // If not found, force a global scan immediately.
     ScanAndInject(startNode);
 }
 // -------------------------------------------------------------------------
 // Cleanup Helpers
 // -------------------------------------------------------------------------
-
 void RemoveInjectedFromGrid(Controls::Grid grid) {
     if (!grid) return;
     try {
@@ -300,11 +284,9 @@ void RemoveInjectedFromGrid(Controls::Grid grid) {
         }
     } catch (...) {}
 }
-
 // -------------------------------------------------------------------------
 // Hooks
 // -------------------------------------------------------------------------
-
 // Helper to reduce redundancy in hooks
 void InjectForElement(void* pThis) {
     try {
@@ -321,11 +303,9 @@ void WINAPI TaskListButton_UpdateVisualStates_Hook(void* pThis) {
     TaskListButton_UpdateVisualStates_Original(pThis);
     InjectForElement(pThis);
 }
-
 // -------------------------------------------------------------------------
 // Initialization Logic
 // -------------------------------------------------------------------------
-
 bool HookTaskbarViewDllSymbols(HMODULE module) {
     WindhawkUtils::SYMBOL_HOOK hooks[] = {
         {
@@ -374,11 +354,10 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dw
     
 }
 
-// --- REPLACE OnSettingsChanged WITH THIS ---
 void OnSettingsChanged() {
     Wh_Log(L"Settings changed. Refreshing Video...");
     
-    // We use the cached frame to trigger a re-scan
+    //use the cached frame to trigger a re-scan
     auto frame = g_cachedTaskbarFrame.get();
     if (!frame) {
         Wh_Log(L"No cached frame found. Flickering taskbar to force update...");
@@ -398,16 +377,14 @@ void OnSettingsChanged() {
         }
         g_trackedGrids.clear();
         
-        // 2. Re-run the scan with new settings
+        //Rerun scan with new settings
         ScanAndInject(frame);
     });
 }
 
 BOOL Wh_ModInit() {
     Wh_Log(L"Initializing Taskbar Video");
-
     HMODULE module = GetTaskbarViewModuleHandle();
-
     if (module) {
         g_taskbarViewDllLoaded = true;
         if (HookTaskbarViewDllSymbols(module)) {
@@ -419,20 +396,16 @@ BOOL Wh_ModInit() {
         WindhawkUtils::Wh_SetFunctionHookT(LoadLibraryExW, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
         Wh_Log(L"Waiting for Taskbar.View.dll to load...");
     }
-
-    return TRUE;
-    
+    return TRUE;    
 }
 
 void Wh_ModUninit() {
     Wh_Log(L"Uninitializing Taskbar video");
-
     std::vector<TrackedGridRef> localGrids;
     {
         std::lock_guard<std::mutex> lock(g_gridMutex);
         localGrids = std::move(g_trackedGrids);
-    }
-    
+    }    
     for (auto& tracked : localGrids) {        
         if (auto grid = tracked.ref.get()) {           
             auto dispatcher = grid.Dispatcher();           
