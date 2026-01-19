@@ -3,14 +3,15 @@
 // @name            Taskbar Video Injector
 // @description     Injects a video player into Taskbar's RootGrid, intended as background video
 // @version         0.7
-// @author          Bbmaster123
+// @author          Bbmaster123 / AI
 // @include         explorer.exe
 // @architecture    x86-64
 // @compilerOptions -DWINVER=0x0A00 -ldwmapi -lole32 -loleaut32 -lruntimeobject -lshcore -lversion
 // ==/WindhawkMod==
 // ==WindhawkModReadme==
 /*
-This mod acts as an addon to the [Windows 11 Taskbar Styler mod](https://windhawk.net/mods/windows-11-taskbar-styler), enabling video to be played on the taskbar. The mod works, but has some minor bugs.
+Based on the code from Lockframe's injector mod, this mod enables video to be played on the taskbar. The mod works, but has some minor bugs.
+If no url or filepath is supplied, a royalty-free stock video will be applied as a placeholder
 
 - supports local filepath (eg. C:\users\admin\videos\test.mp4)
 - looping
