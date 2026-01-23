@@ -2,7 +2,7 @@
 // @id              taskbar-video-injector
 // @name            Taskbar Video Injector
 // @description     Injects a video player into Taskbar's RootGrid, intended as background video
-// @version         0.7
+// @version         0.8
 // @author          Bbmaster123 / AI
 // @include         explorer.exe
 // @architecture    x86-64
@@ -21,7 +21,6 @@ If no url or filepath is supplied, a royalty-free stock video will be applied as
 - works with taskbar styler and other taskbar mods
 
 bugs remaining:
-- Wont apply until taskbar is interacted with (click, open app, etc)
 - if explorer is restarted, mod may need to be toggled (including on reboot)
 
 */
@@ -74,16 +73,50 @@ const std::wstring c_RootGridName        = L"RootGrid";
 const std::wstring c_InjectedGridName    = L"CustomInjectedGrid";
 const std::wstring c_ItemsRepeater = L"Microsoft.UI.Xaml.Controls.ItemsRepeater";
 
+struct {
+    int taskbarHeight;
+} g_settings;
+
+std::atomic<bool> g_taskbarViewDllLoaded;
+std::atomic<bool> g_applyingSettings;
+std::atomic<bool> g_pendingMeasureOverride;
+std::atomic<bool> g_unloading;
+std::atomic<int> g_hookCallCounter;
+
+int g_originalTaskbarHeight;
+int g_taskbarHeight;
+
+double* double_48_value_Original;
+
+void LoadSettings() {
+    g_settings.taskbarHeight = Wh_GetIntSetting(L"TaskbarHeight");   
+}
+
+HWND FindCurrentProcessTaskbarWnd() {
+    HWND hTaskbarWnd = nullptr;
+    EnumWindows(
+        [](HWND hWnd, LPARAM lParam) -> BOOL {
+            DWORD dwProcessId;
+            WCHAR className[32];
+            if (GetWindowThreadProcessId(hWnd, &dwProcessId) &&
+                dwProcessId == GetCurrentProcessId() &&
+                GetClassName(hWnd, className, ARRAYSIZE(className)) &&
+                _wcsicmp(className, L"Shell_TrayWnd") == 0) {
+                *reinterpret_cast<HWND*>(lParam) = hWnd;
+                return FALSE;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&hTaskbarWnd));
+
+    return hTaskbarWnd;
+}
 
 // --- Function pointers ---
-
 using TaskListButton_UpdateVisualStates_t = void(WINAPI*)(void* pThis);
 TaskListButton_UpdateVisualStates_t TaskListButton_UpdateVisualStates_Original = nullptr;
 
-
-
 // --- Helpers ---
-
 FrameworkElement GetFrameworkElementFromNative(void* pThis) {
     try {
         void* iUnknownPtr = 3 + (void**)pThis;
@@ -98,7 +131,6 @@ FrameworkElement GetFrameworkElementFromNative(void* pThis) {
 void RemoveInjectedFromGrid(Controls::Grid grid) {
     if (!grid)
         return;
-
     try {
         auto children = grid.Children();
         for (int i = static_cast<int>(children.Size()) - 1; i >= 0; i--) {
@@ -108,8 +140,8 @@ void RemoveInjectedFromGrid(Controls::Grid grid) {
                 }
             }
         }
-    } catch (...) {
-    }
+    } 
+    catch (...) { }
 }
 
 void AdjustItemsRepeaterZIndex(FrameworkElement root) {
@@ -126,7 +158,6 @@ void AdjustItemsRepeaterZIndex(FrameworkElement root) {
         if (className == c_ItemsRepeater) {
             Controls::Canvas::SetZIndex(child, 2);
         }
-
         AdjustItemsRepeaterZIndex(child);
     }
 }
@@ -135,7 +166,6 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
     auto targetGrid = element.try_as<Controls::Grid>();
     if (!targetGrid)
         return;
-
     {
         std::lock_guard<std::mutex> lock(g_gridMutex);
 
@@ -147,17 +177,14 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
             }
         }
         g_trackedGrids.push_back({ winrt::make_weak(targetGrid) });
-    }
-    
+    }    
 
     RemoveInjectedFromGrid(targetGrid);
 
     std::wstring videoUrl;
     videoUrl = Wh_GetStringSetting(L"videoUrl");
-    if (videoUrl.empty())
-        videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4";
-    if (videoUrl.find(L":") != std::wstring::npos && !videoUrl.starts_with(L"http"))
-        videoUrl = L"file:///" + videoUrl;
+    if (videoUrl.empty()) videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4";
+    if (videoUrl.find(L":") != std::wstring::npos && !videoUrl.starts_with(L"http")) videoUrl = L"file:///" + videoUrl;
 
     bool loop = Wh_GetIntSetting(L"loop") != 0;
     float rate = static_cast<float>(Wh_GetIntSetting(L"rate")) /100.0;
@@ -171,14 +198,11 @@ void InjectGridInsideTargetGrid(FrameworkElement element) {
     Controls::Canvas::SetZIndex(injected, zIndexValue);
 
     winrt::Windows::Media::Playback::MediaPlayer mediaPlayer;
-    mediaPlayer.Source(
-        winrt::Windows::Media::Core::MediaSource::CreateFromUri(
-            winrt::Windows::Foundation::Uri(videoUrl)));
+    mediaPlayer.Source(winrt::Windows::Media::Core::MediaSource::CreateFromUri(winrt::Windows::Foundation::Uri(videoUrl)));
     mediaPlayer.IsLoopingEnabled(loop);
     mediaPlayer.IsMuted(true);
     mediaPlayer.AutoPlay(true);  
-    mediaPlayer.PlaybackRate(rate);
-    
+    mediaPlayer.PlaybackRate(rate);    
 
     Controls::MediaPlayerElement player;
     player.SetMediaPlayer(mediaPlayer);
@@ -231,7 +255,6 @@ FrameworkElement FindRootGridInFrame(FrameworkElement frameElem) {
             return found;
         }
     }
-
     return nullptr;
 }
 
@@ -245,8 +268,28 @@ void TryInjectFromElement(FrameworkElement elem) {
         }
     }
 }
-// --- Hooks ---
 
+using TaskbarConfiguration_GetFrameSize_t =
+    double(WINAPI*)(int enumTaskbarSize);
+TaskbarConfiguration_GetFrameSize_t TaskbarConfiguration_GetFrameSize_Original;
+double WINAPI TaskbarConfiguration_GetFrameSize_Hook(int enumTaskbarSize) {
+    Wh_Log(L"> %d", enumTaskbarSize);
+
+    if (!g_originalTaskbarHeight &&
+        (enumTaskbarSize == 1 || enumTaskbarSize == 2)) {
+        g_originalTaskbarHeight =
+            TaskbarConfiguration_GetFrameSize_Original(enumTaskbarSize);
+    }
+
+    if (g_taskbarHeight &&
+        (enumTaskbarSize == 1 || enumTaskbarSize == 2)) {
+        return g_taskbarHeight;
+    }
+
+    return TaskbarConfiguration_GetFrameSize_Original(enumTaskbarSize);
+}
+
+// --- Hooks ---//
 void WINAPI TaskListButton_UpdateVisualStates_Hook(void* pThis) {
     TaskListButton_UpdateVisualStates_Original(pThis);
 
@@ -266,11 +309,9 @@ void WINAPI TaskListButton_UpdateVisualStates_Hook(void* pThis) {
     }
 }
 
-
 // Called by Windhawk when settings are changed and applied
 void Wh_ModSettingsChanged() {
     std::vector<Controls::Grid> grids;
-
     {
         std::lock_guard<std::mutex> lock(g_gridMutex);
         for (auto& tracked : g_trackedGrids) {
@@ -279,7 +320,6 @@ void Wh_ModSettingsChanged() {
             }
         }
     }
-
     for (auto& grid : grids) {
         auto dispatcher = grid.Dispatcher();
         if (dispatcher) {
@@ -293,45 +333,6 @@ void Wh_ModSettingsChanged() {
     }    
 }
 
-struct { 
-    bool loop;
-}
- g_settings;
-
-std::atomic<bool> g_taskbarViewDllLoaded;
-std::atomic<bool> g_applyingSettings;
-std::atomic<bool> g_pendingMeasureOverride;
-std::atomic<bool> g_unloading;
-std::atomic<int> g_hookCallCounter;
-
-bool loop;
-bool g_inSystemTrayController_UpdateFrameSize;
-
- void LoadSettings() {
-    g_settings.loop = Wh_GetIntSetting(L"loop");
-}
-
-HWND FindCurrentProcessTaskbarWnd() {
-    HWND hTaskbarWnd = nullptr;
-
-    EnumWindows(
-        [](HWND hWnd, LPARAM lParam) -> BOOL {
-            DWORD dwProcessId;
-            WCHAR className[32];
-            if (GetWindowThreadProcessId(hWnd, &dwProcessId) &&
-                dwProcessId == GetCurrentProcessId() &&
-                GetClassName(hWnd, className, ARRAYSIZE(className)) &&
-                _wcsicmp(className, L"Shell_TrayWnd") == 0) {
-                *reinterpret_cast<HWND*>(lParam) = hWnd;
-                return FALSE;
-            }
-            return TRUE;
-        },
-        reinterpret_cast<LPARAM>(&hTaskbarWnd));
-
-    return hTaskbarWnd;
-}
-
 bool ProtectAndMemcpy(DWORD protect, void* dst, const void* src, size_t size) {
     DWORD oldProtect;
     if (!VirtualProtect(dst, size, protect, &oldProtect)) {
@@ -343,55 +344,83 @@ bool ProtectAndMemcpy(DWORD protect, void* dst, const void* src, size_t size) {
     return true;
 }
 
-
 void ApplySettings(int taskbarHeight) {
-  
+    if (taskbarHeight < 2) {
+        taskbarHeight = 2;
+    }
 
     HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
     if (!hTaskbarWnd) {
-        Wh_Log(L"No taskbar found");     
+        Wh_Log(L"No taskbar found");
+        g_taskbarHeight = taskbarHeight;
         return;
     }
 
-      Wh_ModSettingsChanged();   
-
     Wh_Log(L"Applying settings for taskbar %08X",
            (DWORD)(DWORD_PTR)hTaskbarWnd);
-    
+
+    if (!g_taskbarHeight) {
+        RECT taskbarRect{};
+        GetWindowRect(hTaskbarWnd, &taskbarRect);
+        g_taskbarHeight = MulDiv(taskbarRect.bottom - taskbarRect.top, 96,
+                                 GetDpiForWindow(hTaskbarWnd));
+    }
+
+    g_applyingSettings = true;
+
+    if (taskbarHeight == g_taskbarHeight) {
         g_pendingMeasureOverride = true;
+
+        // Temporarily change the height to force a UI refresh.
+        g_taskbarHeight = taskbarHeight - 1;
+        if (!TaskbarConfiguration_GetFrameSize_Original &&
+            double_48_value_Original) {
+            double tempTaskbarHeight = g_taskbarHeight;
+            ProtectAndMemcpy(PAGE_READWRITE, double_48_value_Original,
+                             &tempTaskbarHeight, sizeof(double));
+        }
 
         // Trigger TrayUI::_HandleSettingChange.
         SendMessage(hTaskbarWnd, WM_SETTINGCHANGE, SPI_SETLOGICALDPIOVERRIDE,
                     0);
 
         // Wait for the change to apply.
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 10; i++) {
             if (!g_pendingMeasureOverride) {
                 break;
             }
-
-            Sleep(100);
-    
+            Sleep(10);
+        }
     }
+
     g_pendingMeasureOverride = true;
+    g_taskbarHeight = taskbarHeight;
+    if (!TaskbarConfiguration_GetFrameSize_Original &&
+        double_48_value_Original) {
+        double tempTaskbarHeight = g_taskbarHeight;
+        ProtectAndMemcpy(PAGE_READWRITE, double_48_value_Original,
+                         &tempTaskbarHeight, sizeof(double));
+    }
 
     // Trigger TrayUI::_HandleSettingChange.
     SendMessage(hTaskbarWnd, WM_SETTINGCHANGE, SPI_SETLOGICALDPIOVERRIDE, 0);
-
-    
+   
         // Wait for the change to apply.
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 10; i++) {
             if (!g_pendingMeasureOverride) {
                 break;
             }
-            Sleep(100);
-        } 
+               Sleep(10);
+        }
+  {
         g_pendingMeasureOverride = false;
+    }
 
-
-    HWND hReBarWindow32 = FindWindowEx(hTaskbarWnd, nullptr, L"ReBarWindow32", nullptr);
+    HWND hReBarWindow32 =
+        FindWindowEx(hTaskbarWnd, nullptr, L"ReBarWindow32", nullptr);
     if (hReBarWindow32) {
-        HWND hMSTaskSwWClass = FindWindowEx(hReBarWindow32, nullptr, L"MSTaskSwWClass", nullptr);
+        HWND hMSTaskSwWClass =
+            FindWindowEx(hReBarWindow32, nullptr, L"MSTaskSwWClass", nullptr);
         if (hMSTaskSwWClass) {
             // Trigger CTaskBand::_HandleSyncDisplayChange.
             SendMessage(hMSTaskSwWClass, 0x452, 3, 0);
@@ -401,71 +430,36 @@ void ApplySettings(int taskbarHeight) {
     g_applyingSettings = false;
 }
 
-using TaskbarFrame_TaskbarFrame_t = void*(WINAPI*)(void* pThis);
-TaskbarFrame_TaskbarFrame_t TaskbarFrame_TaskbarFrame_Original;
-void* WINAPI TaskbarFrame_TaskbarFrame_Hook(void* pThis) {
-    Wh_Log(L">");
-
-    void* ret = TaskbarFrame_TaskbarFrame_Original(pThis);
-
-    FrameworkElement taskbarFrame = nullptr;
-    ((IUnknown**)pThis)[1]->QueryInterface(
-        winrt::guid_of<FrameworkElement>(),
-        winrt::put_abi(taskbarFrame)
-    );
-    if (!taskbarFrame) {
-        return ret;
-    }
-
-    auto className = winrt::get_class_name(taskbarFrame);
-    Wh_Log(L"className: %s", className.c_str());
-
-    // store it globally for later
-    g_taskbarFrameWeak = taskbarFrame;
-
-    return ret;
-}
-
-void ForceInitialInjection() {
-    Wh_Log(L"Proactive injection attempt started.");
-    // Let's try to see if we have ANY tracked grids first.
-    if (auto frame = g_taskbarFrameWeak.get()) {
-        if (auto rootGrid = FindRootGridInFrame(frame)) {
-            auto dispatcher = rootGrid.Dispatcher();
-            if (dispatcher) {
-                dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [rootGrid]() {
-                    Wh_Log(L"Injecting into existing frame via dispatcher.");
-                    InjectGridInsideTargetGrid(rootGrid);
-                    g_injectedOnce.store(true);
-                });
-                return;
-            }
-        }
-    }
-    Wh_Log(L"No frame found yet. Injection will occur on next taskbar interaction.");
-}
-
-
 bool HookTaskbarViewDllSymbols(HMODULE module) {
     // Taskbar.View.dll, ExplorerExtensions.dll
     WindhawkUtils::SYMBOL_HOOK symbolHooks[] =  //
         {
-          
             {
-                {LR"(private: void __cdecl winrt::Taskbar::implementation::TaskListButton::UpdateVisualStates(void))"},
-                &TaskListButton_UpdateVisualStates_Original,
-                TaskListButton_UpdateVisualStates_Hook,
-            }
+                // For Windows 11 version 21H2.
+                {LR"(__real@4048000000000000)"},
+                &double_48_value_Original,
+                nullptr,
+                true,
+            },
+            {
+                {LR"(public: static double __cdecl winrt::Taskbar::implementation::TaskbarConfiguration::GetFrameSize(enum winrt::WindowsUdk::UI::Shell::TaskbarSize))"},
+                &TaskbarConfiguration_GetFrameSize_Original,
+                TaskbarConfiguration_GetFrameSize_Hook,
+                true,  // From Windows 11 version 22H2.
+            },
+            {
+                { LR"(private: void __cdecl winrt::Taskbar::implementation::TaskListButton::UpdateVisualStates(void))" },
+                (void**)&TaskListButton_UpdateVisualStates_Original,
+                (void*)TaskListButton_UpdateVisualStates_Hook
+            }      
         };
 
     if (!HookSymbols(module, symbolHooks, ARRAYSIZE(symbolHooks))) {
         Wh_Log(L"HookSymbols failed");
         return false;
-    }
-    return HookSymbols(module, symbolHooks, ARRAYSIZE(symbolHooks));
+    }   
     return true;
 }
-
 
 HMODULE GetTaskbarViewModuleHandle() {
     HMODULE module = GetModuleHandle(L"Taskbar.View.dll");
@@ -495,20 +489,23 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName,
         }
     }   
         Wh_Log(L"Loaded %s", lpLibFileName);  
-          
-
     return module;
 }
-
 
 using SHAppBarMessage_t = decltype(&SHAppBarMessage);
 SHAppBarMessage_t SHAppBarMessage_Original;
 auto WINAPI SHAppBarMessage_Hook(DWORD dwMessage, PAPPBARDATA pData) {
     auto ret = SHAppBarMessage_Original(dwMessage, pData);
 
+    // This is used to position secondary taskbars.
+    if (dwMessage == ABM_QUERYPOS && ret && g_taskbarHeight) {
+        Wh_Log(L">");
+        pData->rc.top =
+            pData->rc.bottom -
+            MulDiv(g_taskbarHeight, GetDpiForWindow(pData->hWnd), 96);
+    }
     return ret;
 }
-
 
 using SendMessageTimeoutW_t = decltype(&SendMessageTimeoutW);
 SendMessageTimeoutW_t SendMessageTimeoutW_Original;
@@ -520,7 +517,7 @@ LRESULT WINAPI SendMessageTimeoutW_Hook(HWND hWnd,
                                         UINT uTimeout,
                                         PDWORD_PTR lpdwResult) {
     if (!g_unloading) {
-        Wh_Log(L">");      
+        Wh_Log(L"unloading");      
     }
 
     LRESULT ret = SendMessageTimeoutW_Original(hWnd, Msg, wParam, lParam,
@@ -529,67 +526,162 @@ LRESULT WINAPI SendMessageTimeoutW_Hook(HWND hWnd,
     return ret;
 }
 
+
+using TaskbarFrame_Height_double_t = void(WINAPI*)(void* pThis, double value);
+TaskbarFrame_Height_double_t TaskbarFrame_Height_double_Original;
+void WINAPI TaskbarFrame_Height_double_Hook(void* pThis, double value) {
+    Wh_Log(L">");
+    return TaskbarFrame_Height_double_Original(pThis, value);
+}
+
+void* TaskbarController_OnGroupingModeChanged_Original;
+
+LONG GetTaskbarFrameOffset() {
+    static LONG taskbarFrameOffset = []() -> LONG {
+        if (!TaskbarController_OnGroupingModeChanged_Original) {
+            Wh_Log(
+                L"Error: TaskbarController_OnGroupingModeChanged_Original is "
+                L"null");
+            return 0;
+        }
+
+#if defined(_M_X64)
+        // 48:83EC 28               | sub rsp,28
+        // 48:8B81 88020000         | mov rax,qword ptr ds:[rcx+288]
+        // or
+        // 4C:8B81 80020000         | mov r8,qword ptr ds:[rcx+280]
+        const BYTE* p =
+            (const BYTE*)TaskbarController_OnGroupingModeChanged_Original;
+        if (p && p[0] == 0x48 && p[1] == 0x83 && p[2] == 0xEC &&
+            (p[4] == 0x48 || p[4] == 0x4C) && p[5] == 0x8B &&
+            (p[6] & 0xC0) == 0x80) {
+            LONG offset = *(LONG*)(p + 7);
+            Wh_Log(L"taskbarFrameOffset=0x%X", offset);
+            return (offset < 0 || offset > 0xFFFF) ? 0 : offset;
+        }
+#endif
+
+        Wh_Log(L"taskbarFrameOffset not found");
+        return 0;
+    }();
+
+    return taskbarFrameOffset;
+}
+
+using TaskbarController_UpdateFrameHeight_t = void(WINAPI*)(void* pThis);
+TaskbarController_UpdateFrameHeight_t
+    TaskbarController_UpdateFrameHeight_Original;
+void WINAPI TaskbarController_UpdateFrameHeight_Hook(void* pThis) {
+    Wh_Log(L">");    
+
+    LONG taskbarFrameOffset = GetTaskbarFrameOffset();
+    if (!taskbarFrameOffset) {
+        Wh_Log(L"Error: taskbarFrameOffset is invalid");
+        TaskbarController_UpdateFrameHeight_Original(pThis);
+        return;
+    }
+
+    void* taskbarFrame = *(void**)((BYTE*)pThis + taskbarFrameOffset);
+    if (!taskbarFrame) {
+        Wh_Log(L"Error: taskbarFrame is null");
+        TaskbarController_UpdateFrameHeight_Original(pThis);
+        return;
+    }
+
+    FrameworkElement taskbarFrameElement = nullptr;
+    ((IUnknown**)taskbarFrame)[1]->QueryInterface(
+        winrt::guid_of<FrameworkElement>(),
+        winrt::put_abi(taskbarFrameElement));
+    if (!taskbarFrameElement) {
+        Wh_Log(L"Error: taskbarFrameElement is null");
+        TaskbarController_UpdateFrameHeight_Original(pThis);
+        return;
+    }
+
+    TaskbarController_UpdateFrameHeight_Original(pThis);
+
+    // Adjust parent grid height if needed.
+    auto contentGrid = Media::VisualTreeHelper::GetParent(taskbarFrameElement)
+                           .try_as<FrameworkElement>();
+    if (contentGrid) {
+        double height = taskbarFrameElement.Height();
+        double contentGridHeight = contentGrid.Height();
+        if (contentGridHeight > 0 && contentGridHeight != height) {
+            Wh_Log(L"Adjusting contentGrid.Height: %f->%f", contentGridHeight,
+                   height);
+            contentGrid.Height(height);
+        }
+    }
+}
+
 BOOL Wh_ModInit() {
-    Wh_Log(L"Wh_ModInit");
-
-    // Hook standard Windows functions
-    WindhawkUtils::Wh_SetFunctionHookT(SHAppBarMessage, SHAppBarMessage_Hook, &SHAppBarMessage_Original);
-    WindhawkUtils::Wh_SetFunctionHookT(SendMessageTimeoutW, SendMessageTimeoutW_Hook, &SendMessageTimeoutW_Original);
-
-    HMODULE module = GetTaskbarViewModuleHandle();
-    if (module) {
+    Wh_Log(L">");
+    LoadSettings();
+    bool delayLoadingNeeded = false;
+    if (HMODULE taskbarViewModule = GetTaskbarViewModuleHandle()) {
         g_taskbarViewDllLoaded = true;
-        // This function now handles ALL symbol hooking for this DLL
-        if (!HookTaskbarViewDllSymbols(module)) {
+        if (!HookTaskbarViewDllSymbols(taskbarViewModule)) {
             return FALSE;
         }
     } else {
-        // Fallback for delayed loading
+        Wh_Log(L"Taskbar view module not loaded yet");
+        delayLoadingNeeded = true;
+    }
+    
+    if (delayLoadingNeeded) {
         HMODULE kernelBaseModule = GetModuleHandle(L"kernelbase.dll");
-        auto pKernelBaseLoadLibraryExW = (decltype(&LoadLibraryExW))GetProcAddress(kernelBaseModule, "LoadLibraryExW");
-        WindhawkUtils::Wh_SetFunctionHookT(pKernelBaseLoadLibraryExW, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
+        auto pKernelBaseLoadLibraryExW =
+            (decltype(&LoadLibraryExW))GetProcAddress(kernelBaseModule,
+                                                      "LoadLibraryExW");
+        WindhawkUtils::Wh_SetFunctionHookT(pKernelBaseLoadLibraryExW,
+                                           LoadLibraryExW_Hook,
+                                           &LoadLibraryExW_Original);
     }
 
-    return TRUE;
+    WindhawkUtils::Wh_SetFunctionHookT(SHAppBarMessage, SHAppBarMessage_Hook,
+                                       &SHAppBarMessage_Original);
+
+    WindhawkUtils::Wh_SetFunctionHookT(SendMessageTimeoutW,
+                                       SendMessageTimeoutW_Hook,
+                                       &SendMessageTimeoutW_Original);
+
+    HMODULE module = GetModuleHandle(L"Taskbar.View.dll");
+    if (!module)
+        module = GetModuleHandle(L"ExplorerExtensions.dll");
+
+
+    return TRUE;   
 }
 
 void Wh_ModAfterInit() {
-    HWND hTaskbarWnd = nullptr;
-    HWND hReBarWindow32 = FindWindowEx(hTaskbarWnd, nullptr, L"ReBarWindow32", nullptr);
-    if (hReBarWindow32) {
-        HWND hMSTaskSwWClass = FindWindowEx(hReBarWindow32, nullptr, L"MSTaskSwWClass", nullptr);
-        if (hMSTaskSwWClass) {
-            // Trigger CTaskBand::_HandleSyncDisplayChange.
-            SendMessage(hMSTaskSwWClass, 0x452, 3, 0);
-        }
-    }
-
-    g_applyingSettings = false;
+    Wh_Log(L"enter after init"); 
+       ApplySettings(g_settings.taskbarHeight);
+         Wh_Log(L"exit after init");
 }
 
 void Wh_ModBeforeUninit() {
     Wh_Log(L">");
-    g_unloading = true;
+    g_unloading = true;   
 }
 
 void Wh_ModUninit() {
-         while (g_hookCallCounter > 0) {
-        Sleep(100);
+    Wh_Log(L">");
+    while (g_hookCallCounter > 0) {
+        Sleep(10);
     }
-    std::vector<TrackedGridRef> localGrids;
+     std::vector<TrackedGridRef> localGrids;
     {
         std::lock_guard<std::mutex> lock(g_gridMutex);
         localGrids = std::move(g_trackedGrids);
     }
-
     for (auto& tracked : localGrids) {
         if (auto grid = tracked.ref.get()) {
             grid.Dispatcher().RunAsync(
-                winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+                winrt::Windows::UI::Core::CoreDispatcherPriority::High,
                 [grid]() {
                     RemoveInjectedFromGrid(grid);
                 }
             );
         }
     }
-}
+}   
