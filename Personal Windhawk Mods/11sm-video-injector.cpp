@@ -1,10 +1,12 @@
 // ==WindhawkMod==
-// @id              startmenu-video-injector-pro
+// @id              startmenu-video-injector
 // @name            Start Menu Video Injector
 // @description     Injects a video player using VisibilityChanged and LayoutUpdated listeners
 // @version         1.8
 // @author          Bbmaster123 / AI
 // @include         StartMenuExperienceHost.exe
+// @include         SearchHost.exe
+// @include         SearchApp.exe
 // @architecture    x86-64
 // @compilerOptions -lole32 -loleaut32 -lruntimeobject -lshcore
 // ==/WindhawkMod==
@@ -99,9 +101,6 @@ void InjectVideo() {
 
         g_videoInstance = std::make_unique<VideoInstance>();
         g_videoInstance->player = winrt::Windows::Media::Playback::MediaPlayer();
-        
-        // STABILITY: Disable real-time sync to reduce tearing during UI animations
-        g_videoInstance->player.RealTimePlayback(false);
 
         auto source = winrt::Windows::Media::Core::MediaSource::CreateFromUri(
             winrt::Windows::Foundation::Uri(Wh_GetStringSetting(L"videoUrl"))
@@ -123,11 +122,8 @@ void InjectVideo() {
 
         // CORNER RADIUS: Correct implementation
         // Sets all 4 corners to 12px. Adjust as needed.
-        container.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 5, 5, 5, 5 });
-        
-        // STABILITY: Prevent "alpha bleed" flickering by giving it a solid base
-        container.Background(SolidColorBrush(winrt::Windows::UI::Colors::Black()));
-        
+        container.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 5, 5, 5, 5 });       
+            
         // This ensures the video content itself is clipped to the CornerRadius
         container.BorderBrush(SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));
         container.BorderThickness(winrt::Windows::UI::Xaml::Thickness{ 0 });
