@@ -1,7 +1,7 @@
 // ==WindhawkMod==
 // @id              gdi-start-orb-restorer
 // @name            GDI+ Start Orb (Animated)
-// @description     Replaces the Start button with smooth alpha-blended transitions.
+// @description     Overlays the Start button with smooth alpha-blended transitions. Works, still buggy, mainly with triggering start menu, animation looks good so far though!
 // @version         0.7
 // @author          Bbmaster123/AI
 // @include         explorer.exe
@@ -15,7 +15,7 @@
   $name: Normal Orb Path
 - orbHover: "C:\\Users\\bbmaster123\\Desktop\\junk\\themes\\orb-pointer.png"
   $name: Hover Orb Path
-- orbPressed: "C:\\Users\\bbmaster123\\Desktop\\junk\\themes\\orb-pointer.png"
+- orbPressed: "C:\\Users\\bbmaster123\\Desktop\\junk\\themes\\orb-pressed.png"
   $name: Pressed Orb Path
 - orbSize: 96
   $name: Orb Size (DPI Aware)
