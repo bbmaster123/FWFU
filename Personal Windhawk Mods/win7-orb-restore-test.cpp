@@ -1,223 +1,338 @@
 // ==WindhawkMod==
-// @id              gdi-start-orb-restorer
-// @name            GDI+ Start Orb (Animated)
-// @description     Overlays the Start button with smooth alpha-blended transitions.
-// @version         1.2
-// @author          Bbmaster123/AI
-// @include         explorer.exe
-// @architecture    x86-64
-// @compilerOptions -lgdiplus -lgdi32 -lshlwapi -luser32
+// @id             start-orb-restorer
+// @name           Start Button Orb +
+// @description    Stable Windows 7 style Start Orb overlay
+// @version        0.7
+// @author         Bbmaster123/AI
+// @include        explorer.exe
+// @architecture   x86-64
+// @compilerOptions -lgdiplus -lgdi32 -luser32
 // ==/WindhawkMod==
 
 // ==WindhawkModSettings==
 /*
-- orbNormal: "C:\\Users\\bbmaster123\\Desktop\\junk\\themes\\orb.png"
-  $name: Normal Orb Path
-- orbHover: "C:\\Users\\bbmaster123\\Desktop\\junk\\themes\\orb-pointer.png"
-  $name: Hover Orb Path
-- orbPressed: "C:\\Users\\bbmaster123\\Desktop\\junk\\themes\\orb-pressed.png"
-  $name: Pressed Orb Path
-- orbSize: 96
-  $name: Orb Size (Pixel Height x DPI Scaling)
-- animSpeed: 25
-  $name: Animation Fade Speed (Higher = Faster)
+- orbNormal: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orb.png"
+- orbHover: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbHover.png"
+- orbPressed: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbPressed.png"
+- orbSize: 72
+- animSpeed: 15
+- minOpacity: 255
+- maxOpacity: 255
+- offsetX: 0
+- offsetY: 0
 */
 // ==/WindhawkModSettings==
 
 #include <windows.h>
 #include <gdiplus.h>
-#include <math.h>
 
 using namespace Gdiplus;
 
-// --- Globals ---
+struct {
+    int size;
+    int speed;
+    int minOpacity;
+    int maxOpacity;
+    int offsetX;
+    int offsetY;
+} g_settings;
+
 HWND g_hOrbWnd = NULL;
+HWND g_hStart = NULL;
+
 ULONG_PTR g_gdiToken = 0;
-Image *g_imgNormal = nullptr, *g_imgHover = nullptr, *g_imgPressed = nullptr;
-const wchar_t g_szClassName[] = L"WindhawkOrbAnimated";
 
-int g_state = 0;          
-int g_hoverAlpha = 0;     
-UINT_PTR g_animTimer = 0;
-UINT_PTR g_posTimer = 0;
-bool g_isDrawing = false;
+Image *g_imgNormal = nullptr;
+Image *g_imgHover = nullptr;
+Image *g_imgPressed = nullptr;
 
-// --- Rendering Engine ---
+float g_fadeAlpha = 0.0f;
+int g_state = 0;
+
+bool g_isUnloading = false;
+
+CRITICAL_SECTION g_cs;
+
+// -------------------- IMAGE --------------------
+
+Image* LoadOne(PCWSTR path) {
+    if (!path || !path[0]) return nullptr;
+    Image* img = Image::FromFile(path);
+    if (!img || img->GetLastStatus() != Ok) {
+        delete img;
+        return nullptr;
+    }
+    return img;
+}
+
+void CleanImages() {
+    EnterCriticalSection(&g_cs);
+    delete g_imgNormal;
+    delete g_imgHover;
+    delete g_imgPressed;
+    g_imgNormal = g_imgHover = g_imgPressed = nullptr;
+    LeaveCriticalSection(&g_cs);
+}
+
+void LoadImages() {
+    CleanImages();
+
+    EnterCriticalSection(&g_cs);
+    g_imgNormal  = LoadOne(Wh_GetStringSetting(L"orbNormal"));
+    g_imgHover   = LoadOne(Wh_GetStringSetting(L"orbHover"));
+    g_imgPressed = LoadOne(Wh_GetStringSetting(L"orbPressed"));
+    LeaveCriticalSection(&g_cs);
+}
+
+// -------------------- START BUTTON --------------------
+
+HWND FindStartButton() {
+    HWND hTask = FindWindow(L"Shell_TrayWnd", NULL);
+    if (!hTask) return NULL;
+
+    HWND child = NULL;
+    while ((child = FindWindowEx(hTask, child, NULL, NULL))) {
+        wchar_t cls[64];
+        GetClassName(child, cls, 64);
+
+        if (wcscmp(cls, L"Start") == 0 ||
+            wcscmp(cls, L"Button") == 0) {
+            return child;
+        }
+    }
+    return NULL;
+}
+
+// -------------------- POSITION --------------------
+
+void PositionOrb() {
+    if (!g_hOrbWnd) return;
+
+    if (!g_hStart)
+        g_hStart = FindStartButton();
+
+    if (!g_hStart) return;
+
+    RECT rc;
+    GetWindowRect(g_hStart, &rc);
+
+    int x = rc.left + ((rc.right - rc.left) - g_settings.size) / 2 + g_settings.offsetX;
+    int y = rc.top + ((rc.bottom - rc.top) - g_settings.size) / 2 + g_settings.offsetY;
+
+    SetWindowPos(g_hOrbWnd, HWND_TOPMOST,
+        x, y, g_settings.size, g_settings.size,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+    // Force topmost (prevents taskbar stealing z-order)
+    SetWindowPos(g_hOrbWnd, HWND_TOPMOST,
+        0,0,0,0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+// -------------------- DRAW --------------------
+
 void UpdateOrbDisplay(HWND hwnd) {
-    if (!hwnd || !IsWindow(hwnd) || g_isDrawing) return;
-    g_isDrawing = true;
+    if (g_isUnloading || !hwnd) return;
 
-    int size = Wh_GetIntSetting(L"orbSize");
+    EnterCriticalSection(&g_cs);
+
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    
-    BITMAPINFO bmi = {{0}};
+
+    BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = size;
-    bmi.bmiHeader.biHeight = size;
+    bmi.bmiHeader.biWidth = g_settings.size;
+    bmi.bmiHeader.biHeight = -g_settings.size;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = NULL;
     HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
-    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
 
-    {
-        Graphics graphics(hdcMem);
-        graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-        graphics.Clear(Color(0, 0, 0, 0));
+    if (hBitmap) {
+        HBITMAP old = (HBITMAP)SelectObject(hdcMem, hBitmap);
 
-        // Safety check: only draw if status is OK
-        if (g_imgNormal && g_imgNormal->GetLastStatus() == Ok) {
-            graphics.DrawImage(g_imgNormal, 0, 0, size, size);
-        }
+        Graphics g(hdcMem);
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        g.Clear(Color(0,0,0,0));
 
-        if (g_imgHover && g_imgHover->GetLastStatus() == Ok && g_hoverAlpha > 0) {
-            float a = fmin(1.0f, fmax(0.0f, (float)g_hoverAlpha / 255.0f));
-            ColorMatrix matrix = {{
-                {1.0f, 0.0f, 0.0f, 0.0f, 0.0f},
-                {0.0f, 1.0f, 0.0f, 0.0f, 0.0f},
-                {0.0f, 0.0f, 1.0f, 0.0f, 0.0f},
-                {0.0f, 0.0f, 0.0f, a, 0.0f},
-                {0.0f, 0.0f, 0.0f, 0.0f, 1.0f}
-            }};
+        RectF rect(0,0,(REAL)g_settings.size,(REAL)g_settings.size);
+
+        Image* img = g_imgNormal;
+
+        if (g_state == 2 && g_imgPressed)
+            img = g_imgPressed;
+
+        g.DrawImage(img, rect);
+
+        if (g_imgHover && g_fadeAlpha > 0.001f && g_state != 2) {
             ImageAttributes attr;
-            attr.SetColorMatrix(&matrix, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
-            graphics.DrawImage(g_imgHover, Rect(0, 0, size, size), 0, 0, 
-                               g_imgHover->GetWidth(), g_imgHover->GetHeight(), UnitPixel, &attr);
+            ColorMatrix matrix = {
+                1,0,0,0,0,
+                0,1,0,0,0,
+                0,0,1,0,0,
+                0,0,0,g_fadeAlpha,0,
+                0,0,0,0,1
+            };
+            attr.SetColorMatrix(&matrix);
+
+            g.DrawImage(g_imgHover, rect, 0,0,
+                g_imgHover->GetWidth(),
+                g_imgHover->GetHeight(),
+                UnitPixel, &attr);
         }
 
-        if (g_state == 2 && g_imgPressed && g_imgPressed->GetLastStatus() == Ok) {
-            graphics.DrawImage(g_imgPressed, 0, 0, size, size);
-        }
+        int alpha = (int)(g_settings.minOpacity +
+            (g_settings.maxOpacity - g_settings.minOpacity) * g_fadeAlpha);
+
+        BLENDFUNCTION blend = {AC_SRC_OVER, 0, (BYTE)alpha, AC_SRC_ALPHA};
+
+        POINT pt = {0,0};
+        SIZE sz = {g_settings.size, g_settings.size};
+
+        UpdateLayeredWindow(hwnd, hdcScreen, NULL, &sz,
+            hdcMem, &pt, 0, &blend, ULW_ALPHA);
+
+        SelectObject(hdcMem, old);
+        DeleteObject(hBitmap);
     }
 
-    POINT ptSrc = {0, 0};
-    SIZE sizeWnd = {size, size};
-    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    
-    UpdateLayeredWindow(hwnd, hdcScreen, NULL, &sizeWnd, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
-
-    SelectObject(hdcMem, hOldBitmap);
-    DeleteObject(hBitmap);
     DeleteDC(hdcMem);
     ReleaseDC(NULL, hdcScreen);
-    
-    g_isDrawing = false;
+
+    LeaveCriticalSection(&g_cs);
 }
 
-// --- Positioning ---
-void UpdateOrbPosition() {
-    if (!g_hOrbWnd || !IsWindow(g_hOrbWnd)) return;
+// -------------------- WINDOW PROC --------------------
 
-    HWND hTask = FindWindow(L"Shell_TrayWnd", NULL);
-    HWND hStart = FindWindowEx(hTask, NULL, L"Start", NULL);
-    if (!hStart) hStart = FindWindowEx(hTask, NULL, L"Button", NULL);
-
-    if (hStart) {
-        RECT rc; GetWindowRect(hStart, &rc);
-        if (rc.left == 0 && rc.top == 0 && rc.right == 0) return;
-
-        int size = Wh_GetIntSetting(L"orbSize");
-        int x = rc.left + ((rc.right - rc.left) - size) / 2;
-        int y = rc.top + ((rc.bottom - rc.top) - size) / 2;
-
-        SetWindowPos(g_hOrbWnd, HWND_TOPMOST, x, y, size, size, 
-                     SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
-    }
-}
-
-// --- Animation ---
-void CALLBACK AnimTimerProc(HWND hwnd, UINT, UINT_PTR, DWORD) {
-    int step = Wh_GetIntSetting(L"animSpeed");
-    bool changed = false;
-
-    if (g_state >= 1) { 
-        if (g_hoverAlpha < 255) {
-            g_hoverAlpha = (int)fmin(255.0, (double)g_hoverAlpha + step);
-            changed = true;
-        }
-    } else { 
-        if (g_hoverAlpha > 0) {
-            g_hoverAlpha = (int)fmax(0.0, (double)g_hoverAlpha - step);
-            changed = true;
-        }
-    }
-    if (changed) UpdateOrbDisplay(g_hOrbWnd);
-}
-
-// --- Window Logic ---
 LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_MOUSEMOVE: {
-            if (g_state == 0) {
-                g_state = 1;
-                TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
-                TrackMouseEvent(&tme);
-                UpdateOrbDisplay(hwnd);
+
+    case WM_TIMER:
+
+        if (wp == 1) {
+            float target = (g_state >= 1) ? 1.0f : 0.0f;
+            float step = g_settings.speed / 1000.0f;
+
+            if (g_fadeAlpha < target) {
+                g_fadeAlpha += step;
+                if (g_fadeAlpha > target) g_fadeAlpha = target;
+            } else if (g_fadeAlpha > target) {
+                g_fadeAlpha -= step;
+                if (g_fadeAlpha < target) g_fadeAlpha = target;
             }
-            break;
+
+            UpdateOrbDisplay(hwnd);
         }
-        case WM_MOUSELEAVE: g_state = 0; break;
-        case WM_LBUTTONDOWN: g_state = 2; UpdateOrbDisplay(hwnd); break;
-        case WM_LBUTTONUP:
-            if (g_state == 2) {
-                g_state = 1;
-                UpdateOrbDisplay(hwnd);
-                HWND hTask = FindWindow(L"Shell_TrayWnd", NULL);
-                PostMessage(hTask, WM_SYSCOMMAND, SC_TASKLIST, 0);
+
+        else if (wp == 2) {
+            PositionOrb();
+        }
+
+        else if (wp == 3) {
+            if (!g_hStart)
+                g_hStart = FindStartButton();
+
+            if (g_hStart) {
+                POINT pt;
+                GetCursorPos(&pt);
+
+                RECT rc;
+                GetWindowRect(g_hStart, &rc);
+
+                bool hover = PtInRect(&rc, pt);
+                bool pressed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && hover;
+
+                g_state = pressed ? 2 : (hover ? 1 : 0);
             }
-            break;
-        case WM_SETCURSOR: SetCursor(LoadCursor(NULL, IDC_HAND)); return TRUE;
+        }
+
+        return 0;
+
+    case WM_SETCURSOR:
+        SetCursor(LoadCursor(NULL, IDC_HAND));
+        return TRUE;
     }
+
     return DefWindowProc(hwnd, msg, wp, lp);
 }
 
-BOOL Wh_ModInit() {
-    GdiplusStartupInput gdiInput;
-    if (GdiplusStartup(&g_gdiToken, &gdiInput, NULL) != Ok) return FALSE;
-    
-    g_imgNormal = Image::FromFile(Wh_GetStringSetting(L"orbNormal"));
-    g_imgHover = Image::FromFile(Wh_GetStringSetting(L"orbHover"));
-    g_imgPressed = Image::FromFile(Wh_GetStringSetting(L"orbPressed"));
+// -------------------- INIT --------------------
 
-    WNDCLASS wc = {0};
+BOOL Wh_ModInit() {
+    InitializeCriticalSection(&g_cs);
+
+    GdiplusStartupInput gdiInput;
+    GdiplusStartup(&g_gdiToken, &gdiInput, NULL);
+
+    g_settings.size = Wh_GetIntSetting(L"orbSize");
+    g_settings.speed = Wh_GetIntSetting(L"animSpeed");
+    g_settings.minOpacity = Wh_GetIntSetting(L"minOpacity");
+    g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
+    g_settings.offsetX = Wh_GetIntSetting(L"offsetX");
+    g_settings.offsetY = Wh_GetIntSetting(L"offsetY");
+
+    LoadImages();
+
+    WNDCLASS wc = {};
     wc.lpfnWndProc = OrbWndProc;
     wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = g_szClassName;
+    wc.lpszClassName = L"WindhawkOrbStable";
     RegisterClass(&wc);
 
-    HWND hTask = FindWindow(L"Shell_TrayWnd", NULL);
-    int size = Wh_GetIntSetting(L"orbSize");
-    
-    g_hOrbWnd = CreateWindowEx(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, 
-                               g_szClassName, NULL, WS_POPUP, 0, 0, size, size, hTask, NULL, wc.hInstance, NULL);
+    g_hOrbWnd = CreateWindowEx(
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        wc.lpszClassName, NULL,
+        WS_POPUP,
+        0,0,g_settings.size,g_settings.size,
+        NULL,NULL,wc.hInstance,NULL);
 
-    UpdateOrbPosition();
-    UpdateOrbDisplay(g_hOrbWnd);
-    
-    g_animTimer = SetTimer(NULL, 0, 16, AnimTimerProc);
-    g_posTimer = SetTimer(NULL, 1, 240, [](HWND, UINT, UINT_PTR, DWORD) { UpdateOrbPosition(); });
+    if (g_hOrbWnd) {
+        SetTimer(g_hOrbWnd, 1, 16, NULL);  // animation
+        SetTimer(g_hOrbWnd, 2, 50, NULL);  // position
+        SetTimer(g_hOrbWnd, 3, 16, NULL);  // state tracking
+
+        PositionOrb();
+        UpdateOrbDisplay(g_hOrbWnd);
+    }
 
     return TRUE;
 }
 
+// -------------------- CLEANUP --------------------
+
 void Wh_ModUninit() {
-    if (g_animTimer) KillTimer(NULL, g_animTimer);
-    if (g_posTimer) KillTimer(NULL, g_posTimer);
-    
+    g_isUnloading = true;
+
     if (g_hOrbWnd) {
-        ShowWindow(g_hOrbWnd, SW_HIDE);
+        KillTimer(g_hOrbWnd, 1);
+        KillTimer(g_hOrbWnd, 2);
+        KillTimer(g_hOrbWnd, 3);
         DestroyWindow(g_hOrbWnd);
-        g_hOrbWnd = NULL;
     }
 
-    UnregisterClass(g_szClassName, GetModuleHandle(NULL));
+    CleanImages();
 
-    if (g_imgNormal) { delete g_imgNormal; g_imgNormal = nullptr; }
-    if (g_imgHover) { delete g_imgHover; g_imgHover = nullptr; }
-    if (g_imgPressed) { delete g_imgPressed; g_imgPressed = nullptr; }
+    if (g_gdiToken)
+        GdiplusShutdown(g_gdiToken);
 
-    if (g_gdiToken) GdiplusShutdown(g_gdiToken);
+    DeleteCriticalSection(&g_cs);
+}
+
+// -------------------- SETTINGS --------------------
+
+void Wh_ModSettingsChanged() {
+    g_settings.size = Wh_GetIntSetting(L"orbSize");
+    g_settings.speed = Wh_GetIntSetting(L"animSpeed");
+    g_settings.minOpacity = Wh_GetIntSetting(L"minOpacity");
+    g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
+    g_settings.offsetX = Wh_GetIntSetting(L"offsetX");
+    g_settings.offsetY = Wh_GetIntSetting(L"offsetY");
+
+    LoadImages();
+
+    if (g_hOrbWnd) {
+        PositionOrb();
+        UpdateOrbDisplay(g_hOrbWnd);
+    }
 }
