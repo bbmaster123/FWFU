@@ -3,7 +3,7 @@
 // @name           Universal Explorer Selection Styler
 // @description    Customize the selection and hover rectangles in both the Navigation Pane and the Main File View
 // @version        1.1.1
-// @author         dirtyrazkl
+// @author         dirtyrazkl/bbmaster123/AI
 // @include        explorer.exe
 // @compilerOptions -luxtheme -lmsimg32 -lgdi32 -lgdiplus
 // ==/WindhawkMod==
