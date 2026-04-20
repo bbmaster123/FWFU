@@ -22,6 +22,15 @@
   $options:
     - serif: Serif Bold (Classic)
     - sans-serif: Sans-Serif Bold (Modern)
+- removeSpace: false
+  $name: Remove Space from Units
+  $description: Remove the space between the number and the unit (e.g., "100GB" instead of "100 GB")
+- lineYOffset: 0
+  $name: Line Y Offset
+  $description: Adjust the vertical position of the entire line of text.
+- boldYOffset: 0
+  $name: Bold Text Y Offset
+  $description: Adjust the vertical position of ONLY the bolded "Used Space" segment.
 */
 // ==/WindhawkModSettings==
 
@@ -65,6 +74,9 @@ DrawTextExW_t DrawTextExW_Orig;
 
 std::wstring g_formatString = L"%s free | %s used of %s";
 bool g_boldUsed = true;
+bool g_removeSpace = false;
+int g_lineYOffset = 0;
+int g_boldYOffset = 0;
 
 enum class BoldStyle {
     Serif,
@@ -79,7 +91,8 @@ void LoadSettings() {
         Wh_FreeStringSetting(format);
     }
 
-    g_boldUsed = Wh_GetIntSetting(L"boldUsed");
+    g_boldUsed = (bool)Wh_GetIntSetting(L"boldUsed");
+    g_removeSpace = (bool)Wh_GetIntSetting(L"removeSpace");
 
     PCWSTR style = Wh_GetStringSetting(L"boldStyle");
     if (style) {
@@ -87,13 +100,20 @@ void LoadSettings() {
         else g_boldStyle = BoldStyle::SansSerif;
         Wh_FreeStringSetting(style);
     }
+
+    g_lineYOffset = Wh_GetIntSetting(L"lineYOffset");
+    g_boldYOffset = Wh_GetIntSetting(L"boldYOffset");
 }
 
 // Helper to format byte sizes (e.g., 1024 -> "1.00 KB")
 std::wstring FormatByteSize(ULONGLONG bytes) {
     wchar_t buffer[64];
     StrFormatByteSizeW(bytes, buffer, ARRAYSIZE(buffer));
-    return std::wstring(buffer);
+    std::wstring s(buffer);
+    if (g_removeSpace) {
+        s.erase(std::remove(s.begin(), s.end(), L' '), s.end());
+    }
+    return s;
 }
 
 // Helper to clean strings before parsing.
@@ -103,13 +123,16 @@ std::wstring CleanNumericString(const std::wstring& s) {
     bool foundStart = false;
     for (wchar_t c : s) {
         if (!foundStart) {
-            if (iswdigit(c) || c == L'.' || c == L'-') {
+            // Keep digits, decimal separators, and signs
+            if (iswdigit(c) || c == L'.' || c == L',' || c == L'-') {
                 foundStart = true;
                 result += c;
             }
             continue;
         }
-        if (c == L',') continue; // Skip thousands separators
+        // Preserve both . and , as swscanf is locale-aware for floats
+        // We only strip spaces which are common in some thousands-grouping formats
+        if (c == L' ') continue; 
         result += c;
     }
     return result;
@@ -152,64 +175,41 @@ std::wstring MakeBold(const std::wstring& s) {
     return result;
 }
 
-BOOL WINAPI ExtTextOutW_Hook(HDC hdc, int x, int y, UINT options, const RECT* lprect, LPCWSTR lpString, UINT c, const INT* lpDx) {
-    if (!lpString || c == 0) return ExtTextOutW_Orig(hdc, x, y, options, lprect, lpString, c, lpDx);
+struct TextSegments {
+    std::wstring prefix;
+    std::wstring used;
+    std::wstring suffix;
+};
 
-    std::wstring text(lpString, c);
-
-    // Look for the typical " free of " string pattern in English.
-    // Note: This is highly localization-dependent. A better approach is needed for non-English systems.
-    size_t freeOfPos = text.find(L" free of ");
-    if (freeOfPos != std::wstring::npos) {
-        // Prevent double processing if we already formatted it
-        if (text.find(L" used of ") != std::wstring::npos) {
-            return ExtTextOutW_Orig(hdc, x, y, options, lprect, lpString, c, lpDx);
-        }
-
-        std::wstring freeSpaceStr = text.substr(0, freeOfPos);
-        std::wstring totalSpaceStr = text.substr(freeOfPos + 9); // length of " free of "
-        
-        std::wstring newText = text; // Default to original text
-        
-        // Clean strings for easier parsing
-        std::wstring cleanFree = CleanNumericString(freeSpaceStr);
-        std::wstring cleanTotal = CleanNumericString(totalSpaceStr);
-        
-        double freeVal = 0, totalVal = 0;
-        wchar_t freeUnit[16] = {0}, totalUnit[16] = {0};
-        
-        int parsedFree = swscanf(cleanFree.c_str(), L"%lf %15s", &freeVal, freeUnit);
-        int parsedTotal = swscanf(cleanTotal.c_str(), L"%lf %15s", &totalVal, totalUnit);
-        
-        if (parsedFree == 2 && parsedTotal == 2) {
-            double freeBytes = freeVal * GetUnitMultiplier(freeUnit);
-            double totalBytes = totalVal * GetUnitMultiplier(totalUnit);
-            double usedBytes = totalBytes - freeBytes;
-            if (usedBytes < 0) usedBytes = 0;
-
-            std::wstring usedWStr = FormatByteSize((ULONGLONG)usedBytes);
-            if (g_boldUsed) {
-                usedWStr = MakeBold(usedWStr);
-            }
-
-            wchar_t newBuffer[256];
-            swprintf(newBuffer, ARRAYSIZE(newBuffer), g_formatString.c_str(), 
-                     freeSpaceStr.c_str(),
-                     usedWStr.c_str(), 
-                     totalSpaceStr.c_str());
-            newText = newBuffer;
-        } else {
-            Wh_Log(L"ExtTextOutW: Parse failed. CleanFree: '%s' (%d), CleanTotal: '%s' (%d)", cleanFree.c_str(), parsedFree, cleanTotal.c_str(), parsedTotal);
-        }
-        
-        return ExtTextOutW_Orig(hdc, x, y, options, lprect, newText.c_str(), newText.length(), nullptr);
+TextSegments GetSegments(const std::wstring& freeStr, const std::wstring& usedStr, const std::wstring& totalStr) {
+    std::wstring format = g_formatString;
+    TextSegments segs;
+    
+    size_t pos1 = format.find(L"%s");
+    if (pos1 != std::wstring::npos) {
+        segs.prefix = format.substr(0, pos1) + freeStr;
+        format.erase(0, pos1 + 2);
     }
-
-    return ExtTextOutW_Orig(hdc, x, y, options, lprect, lpString, c, lpDx);
+    
+    size_t pos2 = format.find(L"%s");
+    if (pos2 != std::wstring::npos) {
+        segs.prefix += format.substr(0, pos2);
+        segs.used = usedStr;
+        segs.suffix = format.substr(pos2 + 2);
+    }
+    
+    size_t pos3 = segs.suffix.find(L"%s");
+    if (pos3 != std::wstring::npos) {
+        std::wstring afterUsed = segs.suffix.substr(0, pos3);
+        std::wstring afterTotal = segs.suffix.substr(pos3 + 2);
+        segs.suffix = afterUsed + totalStr + afterTotal;
+    }
+    
+    return segs;
 }
 
 int WINAPI DrawTextW_Hook(HDC hdc, LPCWSTR lpchText, int cchText, LPRECT lprc, UINT format) {
-    if (!lpchText) return DrawTextW_Orig(hdc, lpchText, cchText, lprc, format);
+    if (!lpchText || !lprc) return DrawTextW_Orig(hdc, lpchText, cchText, lprc, format);
 
     std::wstring text(lpchText, cchText == -1 ? wcslen(lpchText) : cchText);
 
@@ -222,8 +222,11 @@ int WINAPI DrawTextW_Hook(HDC hdc, LPCWSTR lpchText, int cchText, LPRECT lprc, U
         std::wstring freeSpaceStr = text.substr(0, freeOfPos);
         std::wstring totalSpaceStr = text.substr(freeOfPos + 9);
         
-        std::wstring newText = text;
-        
+        if (g_removeSpace) {
+            freeSpaceStr.erase(std::remove(freeSpaceStr.begin(), freeSpaceStr.end(), L' '), freeSpaceStr.end());
+            totalSpaceStr.erase(std::remove(totalSpaceStr.begin(), totalSpaceStr.end(), L' '), totalSpaceStr.end());
+        }
+
         std::wstring cleanFree = CleanNumericString(freeSpaceStr);
         std::wstring cleanTotal = CleanNumericString(totalSpaceStr);
         
@@ -244,23 +247,53 @@ int WINAPI DrawTextW_Hook(HDC hdc, LPCWSTR lpchText, int cchText, LPRECT lprc, U
                 usedWStr = MakeBold(usedWStr);
             }
 
-            wchar_t newBuffer[256];
-            swprintf(newBuffer, ARRAYSIZE(newBuffer), g_formatString.c_str(), 
-                     freeSpaceStr.c_str(),
-                     usedWStr.c_str(), 
-                     totalSpaceStr.c_str());
-            newText = newBuffer;
-        } else {
-            Wh_Log(L"DrawTextW: Parse failed. CleanFree: '%s' (%d), CleanTotal: '%s' (%d)", cleanFree.c_str(), parsedFree, cleanTotal.c_str(), parsedTotal);
+            TextSegments segs = GetSegments(freeSpaceStr, usedWStr, totalSpaceStr);
+            
+            if (format & DT_CALCRECT) {
+                std::wstring fullText = segs.prefix + segs.used + segs.suffix;
+                return DrawTextW_Orig(hdc, fullText.c_str(), fullText.length(), lprc, format);
+            }
+
+            // Strip ellipsis and clipping for chunked drawing
+            UINT drawFlags = (format & ~(DT_END_ELLIPSIS | DT_PATH_ELLIPSIS | DT_WORD_ELLIPSIS)) | DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP;
+
+            SIZE szPrefix, szUsed, szSuffix;
+            GetTextExtentPoint32W(hdc, segs.prefix.c_str(), segs.prefix.length(), &szPrefix);
+            GetTextExtentPoint32W(hdc, segs.used.c_str(), segs.used.length(), &szUsed);
+            GetTextExtentPoint32W(hdc, segs.suffix.c_str(), segs.suffix.length(), &szSuffix);
+            
+            int totalWidth = szPrefix.cx + szUsed.cx + szSuffix.cx;
+            int startX = lprc->left;
+            if (format & DT_CENTER) startX += (lprc->right - lprc->left - totalWidth) / 2;
+            else if (format & DT_RIGHT) startX = lprc->right - totalWidth;
+            
+            RECT rc = *lprc;
+            rc.top += g_lineYOffset;
+            rc.bottom += g_lineYOffset;
+
+            rc.left = startX;
+            rc.right = startX + szPrefix.cx;
+            DrawTextW_Orig(hdc, segs.prefix.c_str(), segs.prefix.length(), &rc, drawFlags);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + szUsed.cx;
+            rc.top += g_boldYOffset;
+            rc.bottom += g_boldYOffset;
+            DrawTextW_Orig(hdc, segs.used.c_str(), segs.used.length(), &rc, drawFlags);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + szSuffix.cx;
+            rc.top -= g_boldYOffset;
+            rc.bottom -= g_boldYOffset;
+            return DrawTextW_Orig(hdc, segs.suffix.c_str(), segs.suffix.length(), &rc, drawFlags);
         }
-        
-        return DrawTextW_Orig(hdc, newText.c_str(), newText.length(), lprc, format);
     }
 
-    return DrawTextW_Orig(hdc, text.c_str(), text.length(), lprc, format);
+    return DrawTextW_Orig(hdc, lpchText, cchText, lprc, format);
 }
+
 HRESULT WINAPI DrawThemeTextEx_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCWSTR pszText, int cchText, DWORD dwTextFlags, LPRECT pRect, const DTTOPTS *pOptions) {
-    if (!pszText) return DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, pszText, cchText, dwTextFlags, pRect, pOptions);
+    if (!pszText || !pRect) return DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, pszText, cchText, dwTextFlags, pRect, pOptions);
 
     std::wstring text(pszText, cchText == -1 ? wcslen(pszText) : cchText);
 
@@ -273,8 +306,11 @@ HRESULT WINAPI DrawThemeTextEx_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iSt
         std::wstring freeSpaceStr = text.substr(0, freeOfPos);
         std::wstring totalSpaceStr = text.substr(freeOfPos + 9);
         
-        std::wstring newText = text;
-        
+        if (g_removeSpace) {
+            freeSpaceStr.erase(std::remove(freeSpaceStr.begin(), freeSpaceStr.end(), L' '), freeSpaceStr.end());
+            totalSpaceStr.erase(std::remove(totalSpaceStr.begin(), totalSpaceStr.end(), L' '), totalSpaceStr.end());
+        }
+
         std::wstring cleanFree = CleanNumericString(freeSpaceStr);
         std::wstring cleanTotal = CleanNumericString(totalSpaceStr);
         
@@ -295,24 +331,57 @@ HRESULT WINAPI DrawThemeTextEx_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iSt
                 usedWStr = MakeBold(usedWStr);
             }
 
-            wchar_t newBuffer[256];
-            swprintf(newBuffer, ARRAYSIZE(newBuffer), g_formatString.c_str(), 
-                     freeSpaceStr.c_str(),
-                     usedWStr.c_str(), 
-                     totalSpaceStr.c_str());
-            newText = newBuffer;
-        } else {
-            Wh_Log(L"DrawThemeTextEx: Parse failed. CleanFree: '%s' (%d), CleanTotal: '%s' (%d)", cleanFree.c_str(), parsedFree, cleanTotal.c_str(), parsedTotal);
+            TextSegments segs = GetSegments(freeSpaceStr, usedWStr, totalSpaceStr);
+            
+            if (dwTextFlags & DT_CALCRECT) {
+                std::wstring fullText = segs.prefix + segs.used + segs.suffix;
+                return DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, fullText.c_str(), fullText.length(), dwTextFlags, pRect, pOptions);
+            }
+
+            // Strip ellipsis for chunks
+            DWORD drawFlags = (dwTextFlags & ~(DT_END_ELLIPSIS | DT_PATH_ELLIPSIS | DT_WORD_ELLIPSIS)) | DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP;
+
+            RECT rcPrefix = {0}, rcUsed = {0}, rcSuffix = {0};
+            GetThemeTextExtent(hTheme, hdc, iPartId, iStateId, segs.prefix.c_str(), segs.prefix.length(), drawFlags, nullptr, &rcPrefix);
+            GetThemeTextExtent(hTheme, hdc, iPartId, iStateId, segs.used.c_str(), segs.used.length(), drawFlags, nullptr, &rcUsed);
+            GetThemeTextExtent(hTheme, hdc, iPartId, iStateId, segs.suffix.c_str(), segs.suffix.length(), drawFlags, nullptr, &rcSuffix);
+            
+            int prefixW = rcPrefix.right - rcPrefix.left;
+            int usedW = rcUsed.right - rcUsed.left;
+            int suffixW = rcSuffix.right - rcSuffix.left;
+            
+            int totalWidth = prefixW + usedW + suffixW;
+            int startX = pRect->left;
+            if (dwTextFlags & DT_CENTER) startX += (pRect->right - pRect->left - totalWidth) / 2;
+            else if (dwTextFlags & DT_RIGHT) startX = pRect->right - totalWidth;
+            
+            RECT rc = *pRect;
+            rc.top += g_lineYOffset;
+            rc.bottom += g_lineYOffset;
+
+            rc.left = startX;
+            rc.right = startX + prefixW;
+            DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, segs.prefix.c_str(), segs.prefix.length(), drawFlags, &rc, pOptions);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + usedW;
+            rc.top += g_boldYOffset;
+            rc.bottom += g_boldYOffset;
+            DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, segs.used.c_str(), segs.used.length(), drawFlags, &rc, pOptions);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + suffixW;
+            rc.top -= g_boldYOffset;
+            rc.bottom -= g_boldYOffset;
+            return DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, segs.suffix.c_str(), segs.suffix.length(), drawFlags, &rc, pOptions);
         }
-        
-        return DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, newText.c_str(), newText.length(), dwTextFlags, pRect, pOptions);
     }
 
     return DrawThemeTextEx_Orig(hTheme, hdc, iPartId, iStateId, pszText, cchText, dwTextFlags, pRect, pOptions);
 }
 
 HRESULT WINAPI DrawThemeText_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCWSTR pszText, int cchText, DWORD dwTextFlags, DWORD dwTextFlags2, LPRECT pRect) {
-    if (!pszText) return DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, pszText, cchText, dwTextFlags, dwTextFlags2, pRect);
+    if (!pszText || !pRect) return DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, pszText, cchText, dwTextFlags, dwTextFlags2, pRect);
 
     std::wstring text(pszText, cchText == -1 ? wcslen(pszText) : cchText);
 
@@ -325,8 +394,11 @@ HRESULT WINAPI DrawThemeText_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStat
         std::wstring freeSpaceStr = text.substr(0, freeOfPos);
         std::wstring totalSpaceStr = text.substr(freeOfPos + 9);
         
-        std::wstring newText = text;
-        
+        if (g_removeSpace) {
+            freeSpaceStr.erase(std::remove(freeSpaceStr.begin(), freeSpaceStr.end(), L' '), freeSpaceStr.end());
+            totalSpaceStr.erase(std::remove(totalSpaceStr.begin(), totalSpaceStr.end(), L' '), totalSpaceStr.end());
+        }
+
         std::wstring cleanFree = CleanNumericString(freeSpaceStr);
         std::wstring cleanTotal = CleanNumericString(totalSpaceStr);
         
@@ -347,24 +419,57 @@ HRESULT WINAPI DrawThemeText_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStat
                 usedWStr = MakeBold(usedWStr);
             }
 
-            wchar_t newBuffer[256];
-            swprintf(newBuffer, ARRAYSIZE(newBuffer), g_formatString.c_str(), 
-                     freeSpaceStr.c_str(),
-                     usedWStr.c_str(), 
-                     totalSpaceStr.c_str());
-            newText = newBuffer;
-        } else {
-            Wh_Log(L"DrawThemeText: Parse failed. CleanFree: '%s' (%d), CleanTotal: '%s' (%d)", cleanFree.c_str(), parsedFree, cleanTotal.c_str(), parsedTotal);
+            TextSegments segs = GetSegments(freeSpaceStr, usedWStr, totalSpaceStr);
+            
+            if (dwTextFlags & DT_CALCRECT) {
+                std::wstring fullText = segs.prefix + segs.used + segs.suffix;
+                return DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, fullText.c_str(), fullText.length(), dwTextFlags, dwTextFlags2, pRect);
+            }
+
+            // Strip ellipsis for chunks
+            DWORD drawFlags = (dwTextFlags & ~(DT_END_ELLIPSIS | DT_PATH_ELLIPSIS | DT_WORD_ELLIPSIS)) | DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP;
+
+            RECT rcPrefix = {0}, rcUsed = {0}, rcSuffix = {0};
+            GetThemeTextExtent(hTheme, hdc, iPartId, iStateId, segs.prefix.c_str(), segs.prefix.length(), drawFlags, nullptr, &rcPrefix);
+            GetThemeTextExtent(hTheme, hdc, iPartId, iStateId, segs.used.c_str(), segs.used.length(), drawFlags, nullptr, &rcUsed);
+            GetThemeTextExtent(hTheme, hdc, iPartId, iStateId, segs.suffix.c_str(), segs.suffix.length(), drawFlags, nullptr, &rcSuffix);
+            
+            int prefixW = rcPrefix.right - rcPrefix.left;
+            int usedW = rcUsed.right - rcUsed.left;
+            int suffixW = rcSuffix.right - rcSuffix.left;
+            
+            int totalWidth = prefixW + usedW + suffixW;
+            int startX = pRect->left;
+            if (dwTextFlags & DT_CENTER) startX += (pRect->right - pRect->left - totalWidth) / 2;
+            else if (dwTextFlags & DT_RIGHT) startX = pRect->right - totalWidth;
+            
+            RECT rc = *pRect;
+            rc.top += g_lineYOffset;
+            rc.bottom += g_lineYOffset;
+
+            rc.left = startX;
+            rc.right = startX + prefixW;
+            DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, segs.prefix.c_str(), segs.prefix.length(), drawFlags, dwTextFlags2, &rc);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + usedW;
+            rc.top += g_boldYOffset;
+            rc.bottom += g_boldYOffset;
+            DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, segs.used.c_str(), segs.used.length(), drawFlags, dwTextFlags2, &rc);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + suffixW;
+            rc.top -= g_boldYOffset;
+            rc.bottom -= g_boldYOffset;
+            return DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, segs.suffix.c_str(), segs.suffix.length(), drawFlags, dwTextFlags2, &rc);
         }
-        
-        return DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, newText.c_str(), newText.length(), dwTextFlags, dwTextFlags2, pRect);
     }
 
     return DrawThemeText_Orig(hTheme, hdc, iPartId, iStateId, pszText, cchText, dwTextFlags, dwTextFlags2, pRect);
 }
 
 int WINAPI DrawTextExW_Hook(HDC hdc, LPWSTR lpchText, int cchText, LPRECT lprc, UINT format, LPDRAWTEXTPARAMS lpdtp) {
-    if (!lpchText) return DrawTextExW_Orig(hdc, lpchText, cchText, lprc, format, lpdtp);
+    if (!lpchText || !lprc) return DrawTextExW_Orig(hdc, lpchText, cchText, lprc, format, lpdtp);
 
     std::wstring text(lpchText, cchText == -1 ? wcslen(lpchText) : cchText);
 
@@ -377,8 +482,11 @@ int WINAPI DrawTextExW_Hook(HDC hdc, LPWSTR lpchText, int cchText, LPRECT lprc, 
         std::wstring freeSpaceStr = text.substr(0, freeOfPos);
         std::wstring totalSpaceStr = text.substr(freeOfPos + 9);
         
-        std::wstring newText = text;
-        
+        if (g_removeSpace) {
+            freeSpaceStr.erase(std::remove(freeSpaceStr.begin(), freeSpaceStr.end(), L' '), freeSpaceStr.end());
+            totalSpaceStr.erase(std::remove(totalSpaceStr.begin(), totalSpaceStr.end(), L' '), totalSpaceStr.end());
+        }
+
         std::wstring cleanFree = CleanNumericString(freeSpaceStr);
         std::wstring cleanTotal = CleanNumericString(totalSpaceStr);
         
@@ -399,17 +507,51 @@ int WINAPI DrawTextExW_Hook(HDC hdc, LPWSTR lpchText, int cchText, LPRECT lprc, 
                 usedWStr = MakeBold(usedWStr);
             }
 
-            wchar_t newBuffer[256];
-            swprintf(newBuffer, ARRAYSIZE(newBuffer), g_formatString.c_str(), 
-                     freeSpaceStr.c_str(),
-                     usedWStr.c_str(), 
-                     totalSpaceStr.c_str());
-            newText = newBuffer;
-        } else {
-            Wh_Log(L"DrawTextExW: Parse failed. CleanFree: '%s' (%d), CleanTotal: '%s' (%d)", cleanFree.c_str(), parsedFree, cleanTotal.c_str(), parsedTotal);
+            TextSegments segs = GetSegments(freeSpaceStr, usedWStr, totalSpaceStr);
+            
+            if (format & DT_CALCRECT) {
+                std::wstring fullText = segs.prefix + segs.used + segs.suffix;
+                std::vector<wchar_t> writeableBuffer(fullText.begin(), fullText.end());
+                writeableBuffer.push_back(L'\0');
+                return DrawTextExW_Orig(hdc, writeableBuffer.data(), fullText.length(), lprc, format, lpdtp);
+            }
+
+            // Strip ellipsis for chunks
+            UINT drawFlags = (format & ~(DT_END_ELLIPSIS | DT_PATH_ELLIPSIS | DT_WORD_ELLIPSIS)) | DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP;
+
+            SIZE szPrefix, szUsed, szSuffix;
+            GetTextExtentPoint32W(hdc, segs.prefix.c_str(), segs.prefix.length(), &szPrefix);
+            GetTextExtentPoint32W(hdc, segs.used.c_str(), segs.used.length(), &szUsed);
+            GetTextExtentPoint32W(hdc, segs.suffix.c_str(), segs.suffix.length(), &szSuffix);
+            
+            int totalWidth = szPrefix.cx + szUsed.cx + szSuffix.cx;
+            int startX = lprc->left;
+            if (format & DT_CENTER) startX += (lprc->right - lprc->left - totalWidth) / 2;
+            else if (format & DT_RIGHT) startX = lprc->right - totalWidth;
+            
+            RECT rc = *lprc;
+            rc.top += g_lineYOffset;
+            rc.bottom += g_lineYOffset;
+
+            rc.left = startX;
+            rc.right = startX + szPrefix.cx;
+            std::vector<wchar_t> b1(segs.prefix.begin(), segs.prefix.end()); b1.push_back(L'\0');
+            DrawTextExW_Orig(hdc, b1.data(), segs.prefix.length(), &rc, drawFlags, lpdtp);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + szUsed.cx;
+            rc.top += g_boldYOffset;
+            rc.bottom += g_boldYOffset;
+            std::vector<wchar_t> b2(segs.used.begin(), segs.used.end()); b2.push_back(L'\0');
+            DrawTextExW_Orig(hdc, b2.data(), segs.used.length(), &rc, drawFlags, lpdtp);
+            
+            rc.left = rc.right;
+            rc.right = rc.left + szSuffix.cx;
+            rc.top -= g_boldYOffset;
+            rc.bottom -= g_boldYOffset;
+            std::vector<wchar_t> b3(segs.suffix.begin(), segs.suffix.end()); b3.push_back(L'\0');
+            return DrawTextExW_Orig(hdc, b3.data(), segs.suffix.length(), &rc, drawFlags, lpdtp);
         }
-        
-        return DrawTextExW_Orig(hdc, (LPWSTR)newText.c_str(), newText.length(), lprc, format, lpdtp);
     }
 
     return DrawTextExW_Orig(hdc, lpchText, cchText, lprc, format, lpdtp);
@@ -426,11 +568,6 @@ int WINAPI DrawTextExW_Hook(HDC hdc, LPWSTR lpchText, int cchText, LPRECT lprc, 
 BOOL Wh_ModInit() {
     LoadSettings();
     
-    // Hooking ExtTextOutW as a broad net.
-    Wh_SetFunctionHook((void*)GetProcAddress(GetModuleHandle(L"gdi32.dll"), "ExtTextOutW"),
-                       (void*)ExtTextOutW_Hook,
-                       (void**)&ExtTextOutW_Orig);
-                       
     Wh_SetFunctionHook((void*)GetProcAddress(GetModuleHandle(L"user32.dll"), "DrawTextW"),
                        (void*)DrawTextW_Hook,
                        (void**)&DrawTextW_Orig);
