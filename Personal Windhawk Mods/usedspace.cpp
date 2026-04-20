@@ -2,7 +2,7 @@
 // @id              this-pc-used-space
 // @name            This PC Used Space
 // @description     Adds "Used Space" to the drive details in "This PC" view in File Explorer.
-// @version         0.0.1
+// @version         0.9
 // @author          Gemini
 // @include         explorer.exe
 // @compilerOptions -lcomctl32 -lole32 -luuid -luser32 -lgdi32 -luxtheme -lshlwapi
