@@ -140,8 +140,11 @@ std::wstring CleanNumericString(const std::wstring& s) {
 }
 
 double GetUnitMultiplier(const wchar_t* u) {
-    if (wcsstr(u, L"KB")) return 1024.0; if (wcsstr(u, L"MB")) return 1048576.0; if (wcsstr(u, L"GB")) return 1073741824.0;
-    if (wcsstr(u, L"TB")) return 1099511627776.0; return 1.0;
+    if (wcsstr(u, L"TB")) return 1099511627776.0; 
+    if (wcsstr(u, L"GB")) return 1073741824.0; 
+    if (wcsstr(u, L"MB")) return 1048576.0; 
+    if (wcsstr(u, L"KB")) return 1024.0;
+    return 1.0; // bytes or B
 }
 
 std::wstring MakeBoldText(const std::wstring& s) {
@@ -185,10 +188,10 @@ static void PaintEnhancedBar(HDC hdc, LPCRECT pRect, int iStateId, bool isFill) 
             LinearGradientBrush br{rect, Color{c1}, Color{c2}, 90.0f};
             graphics.FillPath(&br, &fillPath);
             if (g_showGloss) {
-                RectF gR = rect; gR.Height /= 2.2f; 
-                LinearGradientBrush gBr{gR, Color{130, 255, 255, 255}, Color{0, 255, 255, 255}, 90.0f};
+                // Smooth full-height gloss to eliminate center seam 'white line'
+                LinearGradientBrush gBr{rect, Color{142, 255, 255, 255}, Color{0, 255, 255, 255}, 90.0f};
                 graphics.SetClip(&fillPath);
-                graphics.FillRectangle(&gBr, gR);
+                graphics.FillRectangle(&gBr, rect);
                 graphics.ResetClip();
             }
         }
@@ -206,21 +209,32 @@ static void PaintEnhancedBar(HDC hdc, LPCRECT pRect, int iStateId, bool isFill) 
 static bool IsDiskBar(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT pRect) {
     if (!pRect) return false;
 
-    // 1. Physical Signature (Locked to Disk Bar dimensions)
+    // 0. DPI / Scaling Awareness
+    float scale = 1.0f;
+    HDC screen = GetDC(NULL);
+    if (screen) {
+        scale = (float)GetDeviceCaps(screen, LOGPIXELSY) / 96.0f;
+        ReleaseDC(NULL, screen);
+    }
+
+    // 1. Physical Signature (Scaled for 4K)
     int h = pRect->bottom - pRect->top;
     int w = pRect->right - pRect->left;
-    // Disk info bars: 11-15px. Scrollbars are usually 17px or 20px.
-    if (h < 11 || h > 16 || w < 40 || w > 350) return false;
     
-    // 2. Identity Check (The "Strict Class" Gate)
+    // Height gate: Disk bars are strictly inside 11-16px range (scaled).
+    if (h < (int)(10 * scale) || h > (int)(16.5f * scale)) return false;
+    
+    // Width gate: Background/Track must be wide. Fill can be small.
+    if (iPartId != 5 && w < (int)(40 * scale)) return false;
+    
+    // 2. Identity Check
     if (GetThemeClassList_Ptr) {
         wchar_t themeCls[256];
         if (SUCCEEDED(GetThemeClassList_Ptr(hTheme, themeCls, 256))) {
             std::wstring tCls(themeCls);
             std::transform(tCls.begin(), tCls.end(), tCls.begin(), ::towlower);
-            // Must be Progress. If it mentions ScrollBar at all, reject.
             if (tCls.find(L"progress") == std::wstring::npos) return false;
-            if (tCls.find(L"scrollbar") != std::wstring::npos) return false;
+            if (tCls.find(L"scrollbar") != std::wstring::npos || tCls.find(L"header") != std::wstring::npos) return false;
         }
     }
 
@@ -231,24 +245,23 @@ static bool IsDiskBar(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT
     
     if (hwnd) {
         HWND walk = hwnd;
-        int limit = 15; // Search deep up the tree
+        int limit = 15;
         while (walk && limit-- > 0) {
             wchar_t cls[MAX_PATH];
             if (GetClassName(walk, cls, MAX_PATH)) {
-                // If any parent is a dialog (#32770) or standard list/scrollbar window, REJECT.
                 if (wcscmp(cls, L"#32770") == 0) return false;
-                if (wcsstr(cls, L"ScrollBar") || wcsstr(cls, L"Header") || wcsstr(cls, L"ListView")) return false;
+                if (wcsstr(cls, L"ScrollBar") || wcsstr(cls, L"Header") || wcsstr(cls, L"ListView") || wcsstr(cls, L"Properties")) return false;
             }
             walk = GetParent(walk);
         }
-        // Explorer disk icons are not interactive; if it has TABSTOP, it's likely a form control.
-        if (GetWindowLong(hwnd, GWL_STYLE) & WS_TABSTOP) return false;
     }
 
     // 4. Spatial Margin (Nav Pane Guard)
-    if (pRect->left < 35) return false;
+    if (pRect->left < (int)(32 * scale)) return false;
 
-    return (iPartId == 1 || iPartId == 5 || iPartId == 11);
+    // If all filters pass, this IS a disk bar element. 
+    // We return true for EVERY Part ID to suppress native pulses/overlays/white lines.
+    return true;
 }
 
 static RECT g_lastBarRect = {0};
@@ -256,34 +269,55 @@ static HDC g_lastBarDC = NULL;
 
 HRESULT WINAPI HookedDrawThemeBackground(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT pRect, LPCRECT pClipRect) {
     if (IsDiskBar(hTheme, hdc, iPartId, iStateId, pRect)) {
+        // Suppress native drawing entirely
         bool first = !(hdc == g_lastBarDC && EqualRect(pRect, &g_lastBarRect));
-        if (iPartId == 5) PaintEnhancedBar(hdc, pRect, iStateId, true);
-        else if (first) PaintEnhancedBar(hdc, pRect, iStateId, false);
+        
+        // Only paint our custom bars for the primary bar (1), background (11), or fill (5)
+        if (iPartId == 5) {
+            PaintEnhancedBar(hdc, pRect, iStateId, true);
+        } else if (iPartId == 1 || iPartId == 11) {
+            if (first) PaintEnhancedBar(hdc, pRect, iStateId, false);
+        }
+        
         g_lastBarDC = hdc; g_lastBarRect = *pRect;
-        return S_OK;
+        return S_OK; // Successfully hijacked
     }
     return DrawThemeBackground_Orig(hTheme, hdc, iPartId, iStateId, pRect, pClipRect);
 }
 
 bool FindSpaceStats(const std::wstring& t, std::wstring& f, std::wstring& tot) {
     std::wstring nt = t; for (auto& c : nt) { if (c == 0xA0) c = L' '; } 
-    const wchar_t* units[] = {L" KB", L" MB", L" GB", L" TB"};
+    
+    // Search for the split points used by Explorer
+    size_t split = nt.find(L" free of ");
+    if (split == std::wstring::npos) split = nt.find(L" free | ");
+    
+    if (split != std::wstring::npos) {
+        f = nt.substr(0, split); // Number + Unit (e.g. "128 GB" or "0 bytes")
+        tot = nt.substr(split + (nt[split + 6] == L'|' ? 8 : 9)); // Total (everything after pivot)
+        return true;
+    }
+    
+    // Fallback: search for first unit pair
+    const wchar_t* units[] = {L" bytes", L" KB", L" MB", L" GB", L" TB", L" B"};
     size_t u1 = std::wstring::npos;
     for (auto u : units) { size_t p = nt.find(u); if (p != std::wstring::npos) { u1 = p + wcslen(u); break; } }
     if (u1 == std::wstring::npos) return false;
+    
     f = nt.substr(0, u1);
-    size_t split = nt.find(L" free of ");
-    if (split == std::wstring::npos) split = nt.find(L" free | ");
-    if (split == std::wstring::npos) {
-        size_t lastNum = nt.find_last_of(L"0123456789");
-        if (lastNum != std::wstring::npos && lastNum > u1 + 5) {
-            size_t nextU = std::wstring::npos;
-            for (auto u : units) { size_t p = nt.find(u, lastNum); if (p != std::wstring::npos) { nextU = p + wcslen(u); break; } }
-            if (nextU != std::wstring::npos) tot = nt.substr(lastNum - 3, nextU - (lastNum - 3));
+    // Find a second unit for total
+    size_t lastNum = nt.find_last_of(L"0123456789");
+    if (lastNum != std::wstring::npos && lastNum > u1 + 2) {
+        size_t nextU = std::wstring::npos;
+        for (auto u : units) { size_t p = nt.find(u, lastNum); if (p != std::wstring::npos) { nextU = p + wcslen(u); break; } }
+        if (nextU != std::wstring::npos) {
+            size_t start = nt.find_last_not_of(L"0123456789., ", lastNum);
+            if (start == std::wstring::npos) start = 0; else start++;
+            tot = nt.substr(start, nextU - start);
+            return true;
         }
     }
-    if (split != std::wstring::npos) { tot = nt.substr(split + (nt[split + 6] == L'|' ? 8 : 9)); return true; }
-    return !tot.empty();
+    return false;
 }
 
 int WINAPI DrawTextW_Hook(HDC hdc, LPCWSTR psz, int cch, LPRECT prc, UINT fmt) {
