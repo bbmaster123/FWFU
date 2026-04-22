@@ -2,7 +2,7 @@
 // @id              this-pc-enhanced-details
 // @name            This PC Enhanced Details
 // @description     Combines "Used Space" details with customizable, color-coded disk usage bars in "This PC".
-// @version         1.4.3
+// @version         1.0
 // @author          bbmaster123
 // @include         explorer.exe
 // @compilerOptions -lcomctl32 -lole32 -luuid -luser32 -lgdi32 -luxtheme -lshlwapi -lmsimg32 -lgdiplus
@@ -221,11 +221,14 @@ static bool IsDiskBar(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT
     int h = pRect->bottom - pRect->top;
     int w = pRect->right - pRect->left;
     
-    // Height gate: Disk bars are strictly inside 11-16px range (scaled).
-    if (h < (int)(10 * scale) || h > (int)(16.5f * scale)) return false;
+    // Height gate: The Track (1/11) is thicker, but the inner Fill (5) fits inside it and can be small.
+    // At 100% low-res scale, Fill can be as small as 5-8px. Upper bound widened for 4K 200%+ scaling.
+    int minHeight = (iPartId == 5) ? (int)(4 * scale) : (int)(8 * scale);
+    int maxHeight = (int)(32 * scale);
+    if (h < minHeight || h > maxHeight) return false;
     
     // Width gate: Background/Track must be wide. Fill can be small.
-    if (iPartId != 5 && w < (int)(40 * scale)) return false;
+    if (iPartId != 5 && w < (int)(32 * scale)) return false;
     
     // 2. Identity Check
     if (GetThemeClassList_Ptr) {
