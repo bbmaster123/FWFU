@@ -9,6 +9,8 @@
 // ==/WindhawkMod==
 // ==WindhawkModReadme==
 /*
+![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/screenshot.png)
+
 Enables the ability to customize the disk drive tiles in explorer.
 Several customizations are available for enhancing the disk's usage bar, as well as the details that appear below. 
 
@@ -26,7 +28,6 @@ ex.
 
 // ==WindhawkModSettings==
 /*
-
 - barNormalStart: "#2ECC71"
   $name: Bar Color Gradient Start
   $description: set start and end to the same value if you don't want a gradient
