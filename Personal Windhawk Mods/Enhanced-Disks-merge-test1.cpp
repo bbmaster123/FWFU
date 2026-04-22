@@ -209,28 +209,47 @@ static void PaintEnhancedBar(HDC hdc, LPCRECT pRect, int iStateId, bool isFill) 
 static bool IsDiskBar(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT pRect) {
     if (!pRect) return false;
 
-    // 0. DPI / Scaling Awareness
+    // A disk bar (Progress Theme) will ONLY request to draw Tracks (1, 11) or Fills (5).
+    // By enforcing this instantly, we absolutely cure 'black scrollbars' and dialog ghosts
+    // which use completely different part IDs (e.g. Scrollbar Thumb is 2 or 3).
+    if (iPartId != 1 && iPartId != 5 && iPartId != 11) return false;
+
+    // 0. Identify Context Window (Handles disconnected Memory DCs gracefully)
+    HWND hwnd = NULL;
+    if (GetThemeWindow_Ptr) hwnd = GetThemeWindow_Ptr(hTheme);
+    if (!hwnd) hwnd = WindowFromDC(hdc);
+    if (!hwnd) hwnd = GetActiveWindow(); // Fall-through checks thread's primary active window
+
+    // 1. Precise Per-Monitor Scaling Awareness
+    static auto pGetDpiForWindow = (UINT(WINAPI*)(HWND))GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
     float scale = 1.0f;
-    HDC screen = GetDC(NULL);
-    if (screen) {
-        scale = (float)GetDeviceCaps(screen, LOGPIXELSY) / 96.0f;
-        ReleaseDC(NULL, screen);
+    if (pGetDpiForWindow && hwnd) {
+        // Modern approach: fetches exactly the Per-Monitor V2 DPI scaling of the target window.
+        scale = (float)pGetDpiForWindow(hwnd) / 96.0f;
+    } else {
+        // Fallback for extremely old rendering engines
+        scale = (float)GetDeviceCaps(hdc, LOGPIXELSY) / 96.0f;
     }
 
-    // 1. Physical Signature (Scaled for 4K)
+    // 2. Exact Logical Dimensioning
     int h = pRect->bottom - pRect->top;
     int w = pRect->right - pRect->left;
     
-    // Height gate: The Track (1/11) is thicker, but the inner Fill (5) fits inside it and can be small.
-    // At 100% low-res scale, Fill can be as small as 5-8px. Upper bound widened for 4K 200%+ scaling.
-    int minHeight = (iPartId == 5) ? (int)(4 * scale) : (int)(8 * scale);
-    int maxHeight = (int)(32 * scale);
-    if (h < minHeight || h > maxHeight) return false;
+    // Normalize physical pixels to perfect logical bounds with synced Monitor-DPI
+    float logicalH = (float)h / scale;
+    float logicalW = (float)w / scale;
     
-    // Width gate: Background/Track must be wide. Fill can be small.
-    if (iPartId != 5 && w < (int)(32 * scale)) return false;
+    if (iPartId == 5) {
+        // Capped strictly at 15.5px logical.
+        if (logicalH < 2.0f || logicalH > 15.5f) return false;
+    } else {
+        // Track height is tightly clamped to 16.5px logical to block the 17-20px bounding box 
+        // of generic Shell UI elements like the Property Dialog Green Pill.
+        if (logicalW < 30.0f) return false;
+        if (logicalH < 6.0f || logicalH > 16.5f) return false;
+    }
     
-    // 2. Identity Check
+    // 3. Identity Check
     if (GetThemeClassList_Ptr) {
         wchar_t themeCls[256];
         if (SUCCEEDED(GetThemeClassList_Ptr(hTheme, themeCls, 256))) {
@@ -241,10 +260,7 @@ static bool IsDiskBar(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT
         }
     }
 
-    // 3. Hierarchy Shield (Deep Recursive Search)
-    HWND hwnd = NULL;
-    if (GetThemeWindow_Ptr) hwnd = GetThemeWindow_Ptr(hTheme);
-    if (!hwnd) hwnd = WindowFromDC(hdc);
+    // 4. Hierarchy Shield (Deep Recursive Search)
     
     if (hwnd) {
         HWND walk = hwnd;
@@ -252,8 +268,18 @@ static bool IsDiskBar(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT
         while (walk && limit-- > 0) {
             wchar_t cls[MAX_PATH];
             if (GetClassName(walk, cls, MAX_PATH)) {
-                if (wcscmp(cls, L"#32770") == 0) return false;
-                if (wcsstr(cls, L"ScrollBar") || wcsstr(cls, L"Header") || wcsstr(cls, L"ListView") || wcsstr(cls, L"Properties")) return false;
+                std::wstring wCls(cls);
+                std::transform(wCls.begin(), wCls.end(), wCls.begin(), ::towlower);
+                
+                if (wCls == L"#32770" || 
+                    wCls == L"msctls_progress32" || 
+                    wCls.find(L"scrollbar") != std::wstring::npos || 
+                    wCls.find(L"header") != std::wstring::npos || 
+                    wCls.find(L"listview") != std::wstring::npos || 
+                    wCls.find(L"property") != std::wstring::npos) 
+                {
+                    return false;
+                }
             }
             walk = GetParent(walk);
         }
