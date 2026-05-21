@@ -69,7 +69,6 @@ bool g_enableChromiumCmdLine = false;
 bool g_enableDpiHooks = false;
 bool g_excludeMenuBar = false;
 bool g_shouldApply = false;
-bool g_isPdexplo = false;
 bool g_isWlmail = false;
 bool g_isMmc = false;
 bool g_isNotepad = false;
@@ -481,7 +480,7 @@ BOOL WINAPI SystemParametersInfoW_Hook(UINT uiAction, UINT uiParam, PVOID pvPara
             scaleFont(ncm->lfMenuFont);
         }
         // Scale status or message fonts only for specific apps that need it to prevent double-scaling in DirectUI apps like WLM
-        if (g_isPdexplo || g_isMmc) {
+        if (g_isMmc) {
             scaleFont(ncm->lfStatusFont);
             scaleFont(ncm->lfMessageFont);
         }
@@ -570,7 +569,7 @@ BOOL WINAPI SystemParametersInfoA_Hook(UINT uiAction, UINT uiParam, PVOID pvPara
             scaleFont(ncm->lfMenuFont);
         }
         // Scale status or message fonts only for specific apps that need it to prevent double-scaling in DirectUI apps like WLM
-        if (g_isPdexplo || g_isMmc) {
+        if (g_isMmc) {
             scaleFont(ncm->lfStatusFont);
             scaleFont(ncm->lfMessageFont);
         }
@@ -776,8 +775,8 @@ int WINAPI GetDeviceCaps_Hook(HDC hdc, int index) {
         if (dpi > 0) {
             void* retAddr = _ReturnAddress();
             if (g_isMmc) {
-                // For MMC, we specifically want to scale even internal calls 
-                // because the snap-ins are often a mess of mixed architectures.
+                // For MMC and PowerDesk, we specifically want to scale even internal calls 
+                // because the shell components often have mixed logic.
                 int scaled = (int)(dpi * g_scaleMultiplier);
                 in_dpi_hook = false;
                 return scaled;
@@ -997,7 +996,6 @@ void LoadSettings() {
     }
 
     g_shouldApply = false;
-    g_isPdexplo = CaseInsensitiveContains(exeName, L"pdexplo.exe");
     g_isWlmail = CaseInsensitiveContains(exeName, L"wlmail.exe");
     g_isMmc = CaseInsensitiveContains(exeName, L"mmc.exe");
     g_isNotepad = CaseInsensitiveContains(exeName, L"notepad.exe");
