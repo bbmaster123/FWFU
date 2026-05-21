@@ -2,7 +2,7 @@
 // @id              per-app-dpi-override
 // @name            Per-App Custom DPI Override
 // @description     Overrides the DPI scaling factor for specific applications.
-// @version         1.9.0
+// @version         2.0.0
 // @author          bbmaster123
 // @compilerOptions -lshcore -lpsapi -lcomctl32 -lgdi32
 // ==/WindhawkMod==
@@ -53,6 +53,10 @@ To solve this, the mod can inject the `--force-device-scale-factor` command line
 #include <intrin.h>
 #include <psapi.h>
 #include <commctrl.h>
+#include <uxtheme.h>
+#include <unordered_set>
+#include <unordered_map>
+#include <mutex>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define _ReturnAddress() __builtin_return_address(0)
@@ -65,9 +69,91 @@ bool g_enableChromiumCmdLine = false;
 bool g_enableDpiHooks = false;
 bool g_excludeMenuBar = false;
 bool g_shouldApply = false;
+bool g_isPdexplo = false;
+bool g_isWlmail = false;
+bool g_isMmc = false;
+bool g_isNotepad = false;
 
 static void* g_user32_start = nullptr;
 static void* g_user32_end = nullptr;
+static void* g_gdi32_start = nullptr;
+static void* g_gdi32_end = nullptr;
+static void* g_comctl32_start = nullptr;
+static void* g_comctl32_end = nullptr;
+static void* g_uxtheme_start = nullptr;
+static void* g_uxtheme_end = nullptr;
+
+thread_local bool in_dpi_hook = false;
+
+bool IsInternalOSCall(void* retAddr) {
+    if (!retAddr) return false;
+    if (g_user32_start && retAddr >= g_user32_start && retAddr < g_user32_end) return true;
+    if (g_gdi32_start && retAddr >= g_gdi32_start && retAddr < g_gdi32_end) return true;
+    if (g_comctl32_start && retAddr >= g_comctl32_start && retAddr < g_comctl32_end) return true;
+    if (g_uxtheme_start && retAddr >= g_uxtheme_start && retAddr < g_uxtheme_end) return true;
+    return false;
+}
+
+static void* g_mshtml_start = nullptr;
+static void* g_mshtml_end = nullptr;
+static void* g_ieframe_start = nullptr;
+static void* g_ieframe_end = nullptr;
+
+typedef int(WINAPI* GetSystemMetricsForDpi_t)(int nIndex, UINT dpi);
+GetSystemMetricsForDpi_t GetSystemMetricsForDpi_Orig;
+
+int WINAPI GetSystemMetricsForDpi_Hook(int nIndex, UINT dpi) {
+    if (in_dpi_hook) return GetSystemMetricsForDpi_Orig(nIndex, dpi);
+    in_dpi_hook = true;
+    int res = GetSystemMetricsForDpi_Orig(nIndex, dpi);
+    if (g_isWlmail) {
+        if (nIndex == SM_CYCAPTION || nIndex == SM_CYSMCAPTION || nIndex == SM_CYSIZEFRAME || nIndex == SM_CXSIZEFRAME) {
+            in_dpi_hook = false;
+            return res;
+        }
+    }
+    in_dpi_hook = false;
+    return res;
+}
+
+void UpdateModuleRanges() {
+    if (!g_mshtml_start) {
+        HMODULE hMshtml = GetModuleHandle(L"mshtml.dll");
+        if (hMshtml) {
+            g_mshtml_start = hMshtml;
+            PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)hMshtml;
+            if (dosHeader->e_magic == IMAGE_DOS_SIGNATURE) {
+                PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((PBYTE)hMshtml + dosHeader->e_lfanew);
+                if (ntHeaders->Signature == IMAGE_NT_SIGNATURE) {
+                    g_mshtml_end = (PBYTE)hMshtml + ntHeaders->OptionalHeader.SizeOfImage;
+                }
+            }
+        }
+    }
+    if (!g_ieframe_start) {
+        HMODULE hIeframe = GetModuleHandle(L"ieframe.dll");
+        if (hIeframe) {
+            g_ieframe_start = hIeframe;
+            PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)hIeframe;
+            if (dosHeader->e_magic == IMAGE_DOS_SIGNATURE) {
+                PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((PBYTE)hIeframe + dosHeader->e_lfanew);
+                if (ntHeaders->Signature == IMAGE_NT_SIGNATURE) {
+                    g_ieframe_end = (PBYTE)hIeframe + ntHeaders->OptionalHeader.SizeOfImage;
+                }
+            }
+        }
+    }
+}
+
+UINT GetAdjustedDpiForModule(void* retAddr) {
+    if (!retAddr) return 0;
+    UpdateModuleRanges();
+    if ((g_mshtml_start && retAddr >= g_mshtml_start && retAddr < g_mshtml_end) ||
+        (g_ieframe_start && retAddr >= g_ieframe_start && retAddr < g_ieframe_end)) {
+        return (UINT)(96.0 + (96.0 * g_scaleMultiplier - 96.0) / 2.0);
+    }
+    return 0;
+}
 
 bool CaseInsensitiveContains(const std::wstring& str, const std::wstring& sub) {
     auto it = std::search(
@@ -79,6 +165,125 @@ bool CaseInsensitiveContains(const std::wstring& str, const std::wstring& sub) {
 }
 
 // -------------------------------------------------------------------------
+// THREAD-SAFE FONT REGISTRY & CACHING
+// -------------------------------------------------------------------------
+
+std::unordered_map<HFONT, HFONT> g_fontScaleCache; 
+std::unordered_set<HFONT> g_scaledFonts;
+std::mutex g_fontMutex;
+std::unordered_map<HTHEME, std::wstring> g_themeClasses;
+std::mutex g_themeMutex;
+
+HFONT GetOrCreateScaledFont(HFONT hOrigFont) {
+    if (!hOrigFont) return NULL;
+    std::lock_guard<std::mutex> lock(g_fontMutex);
+    
+    // If it's already a scaled font, return it directly
+    if (g_scaledFonts.find(hOrigFont) != g_scaledFonts.end()) {
+        return hOrigFont;
+    }
+    
+    auto it = g_fontScaleCache.find(hOrigFont);
+    if (it != g_fontScaleCache.end()) {
+        return it->second;
+    }
+    
+    LOGFONTW lf;
+    if (GetObjectW(hOrigFont, sizeof(lf), &lf)) {
+        // Heuristic to avoid double-scaling:
+        // Standard UI fonts are usually 8-12pt, which at 100% is around -11 to -16 pixels.
+        // If it's already > 25 pixels, it's likely already scaled by a hooked DPI API.
+        if (std::abs(lf.lfHeight) > 25) {
+            return hOrigFont;
+        }
+
+        lf.lfHeight = (LONG)(lf.lfHeight * g_scaleMultiplier);
+        if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * g_scaleMultiplier);
+        
+        HFONT hScaled = CreateFontIndirectW(&lf);
+        if (hScaled) {
+            g_scaledFonts.insert(hScaled);
+            g_fontScaleCache[hOrigFont] = hScaled;
+            return hScaled;
+        }
+    }
+    return hOrigFont;
+}
+
+// -------------------------------------------------------------------------
+// GLOBAL FONT HOOKS FOR MMC
+// -------------------------------------------------------------------------
+
+typedef HFONT(WINAPI* CreateFontIndirectW_t)(const LOGFONTW* plf);
+CreateFontIndirectW_t CreateFontIndirectW_Orig;
+
+HFONT WINAPI CreateFontIndirectW_Hook(const LOGFONTW* plf) {
+    if (g_isMmc && plf && !in_dpi_hook) {
+        in_dpi_hook = true;
+        LOGFONTW lf = *plf;
+        if (std::abs(lf.lfHeight) < 30) {
+            lf.lfHeight = (LONG)(lf.lfHeight * g_scaleMultiplier);
+            if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * g_scaleMultiplier);
+        }
+        HFONT hFont = CreateFontIndirectW_Orig(&lf);
+        if (hFont) {
+            std::lock_guard<std::mutex> lock(g_fontMutex);
+            g_scaledFonts.insert(hFont);
+        }
+        in_dpi_hook = false;
+        return hFont;
+    }
+    return CreateFontIndirectW_Orig(plf);
+}
+
+typedef HFONT(WINAPI* CreateFontW_t)(int cHeight, int cWidth, int cEscapement, int cOrientation, int cWeight, DWORD bItalic, DWORD bUnderline, DWORD bStrikeOut, DWORD iCharSet, DWORD iOutPrecision, DWORD iClipPrecision, DWORD iQuality, DWORD iPitchAndFamily, LPCWSTR pszFaceName);
+CreateFontW_t CreateFontW_Orig;
+
+HFONT WINAPI CreateFontW_Hook(int cHeight, int cWidth, int cEscapement, int cOrientation, int cWeight, DWORD bItalic, DWORD bUnderline, DWORD bStrikeOut, DWORD iCharSet, DWORD iOutPrecision, DWORD iClipPrecision, DWORD iQuality, DWORD iPitchAndFamily, LPCWSTR pszFaceName) {
+    if (g_isMmc && !in_dpi_hook) {
+        in_dpi_hook = true;
+        if (std::abs(cHeight) < 30) {
+            cHeight = (int)(cHeight * g_scaleMultiplier);
+            if (cWidth != 0) cWidth = (int)(cWidth * g_scaleMultiplier);
+        }
+        HFONT hFont = CreateFontW_Orig(cHeight, cWidth, cEscapement, cOrientation, cWeight, bItalic, bUnderline, bStrikeOut, iCharSet, iOutPrecision, iClipPrecision, iQuality, iPitchAndFamily, pszFaceName);
+        if (hFont) {
+            std::lock_guard<std::mutex> lock(g_fontMutex);
+            g_scaledFonts.insert(hFont);
+        }
+        in_dpi_hook = false;
+        return hFont;
+    }
+    return CreateFontW_Orig(cHeight, cWidth, cEscapement, cOrientation, cWeight, bItalic, bUnderline, bStrikeOut, iCharSet, iOutPrecision, iClipPrecision, iQuality, iPitchAndFamily, pszFaceName);
+}
+
+// -------------------------------------------------------------------------
+// IMAGE LOADING HOOKS
+// -------------------------------------------------------------------------
+
+typedef HANDLE(WINAPI* LoadImageW_t)(HINSTANCE hInst, LPCWSTR name, UINT type, int cx, int cy, UINT fuLoad);
+LoadImageW_t LoadImageW_Orig;
+
+HANDLE WINAPI LoadImageW_Hook(HINSTANCE hInst, LPCWSTR name, UINT type, int cx, int cy, UINT fuLoad) {
+    if (g_isMmc && cx > 0 && cy > 0 && (type == IMAGE_ICON || type == IMAGE_BITMAP)) {
+        cx = (int)(cx * g_scaleMultiplier);
+        cy = (int)(cy * g_scaleMultiplier);
+    }
+    return LoadImageW_Orig(hInst, name, type, cx, cy, fuLoad);
+}
+
+typedef HANDLE(WINAPI* LoadImageA_t)(HINSTANCE hInst, LPCSTR name, UINT type, int cx, int cy, UINT fuLoad);
+LoadImageA_t LoadImageA_Orig;
+
+HANDLE WINAPI LoadImageA_Hook(HINSTANCE hInst, LPCSTR name, UINT type, int cx, int cy, UINT fuLoad) {
+    if (g_isMmc && cx > 0 && cy > 0 && (type == IMAGE_ICON || type == IMAGE_BITMAP)) {
+        cx = (int)(cx * g_scaleMultiplier);
+        cy = (int)(cy * g_scaleMultiplier);
+    }
+    return LoadImageA_Orig(hInst, name, type, cx, cy, fuLoad);
+}
+
+// -------------------------------------------------------------------------
 // DPI HOOKS
 // -------------------------------------------------------------------------
 
@@ -86,57 +291,76 @@ typedef UINT(WINAPI* GetDpiForWindow_t)(HWND hwnd);
 GetDpiForWindow_t GetDpiForWindow_Orig;
 
 UINT WINAPI GetDpiForWindow_Hook(HWND hwnd) {
+    if (in_dpi_hook) {
+        return GetDpiForWindow_Orig(hwnd);
+    }
+    in_dpi_hook = true;
     UINT dpi = GetDpiForWindow_Orig(hwnd);
-    if (dpi == 0) return 0;
-    
-    void* retAddr = _ReturnAddress();
-    if (retAddr >= g_user32_start && retAddr < g_user32_end) {
-        return dpi; // Bypass internal user32.dll calls to prevent crashes
+    if (dpi == 0) {
+        in_dpi_hook = false;
+        return 0;
     }
     
-    return (UINT)(dpi * g_scaleMultiplier);
+    void* retAddr = _ReturnAddress();
+    if (IsInternalOSCall(retAddr)) {
+        in_dpi_hook = false;
+        return dpi; // Bypass internal OS calls to prevent crashes
+    }
+    UINT adj = GetAdjustedDpiForModule(retAddr);
+    if (adj > 0) {
+        in_dpi_hook = false;
+        return adj;
+    }
+    
+    UINT result = (UINT)(96.0 * g_scaleMultiplier);
+    in_dpi_hook = false;
+    return result;
 }
 
 typedef UINT(WINAPI* GetDpiForSystem_t)();
 GetDpiForSystem_t GetDpiForSystem_Orig;
 
 UINT WINAPI GetDpiForSystem_Hook() {
+    if (in_dpi_hook) {
+        return GetDpiForSystem_Orig();
+    }
+    in_dpi_hook = true;
     UINT dpi = GetDpiForSystem_Orig();
     
     void* retAddr = _ReturnAddress();
-    if (retAddr >= g_user32_start && retAddr < g_user32_end) {
+    if (IsInternalOSCall(retAddr)) {
+        in_dpi_hook = false;
         return dpi;
     }
+    UINT adj = GetAdjustedDpiForModule(retAddr);
+    if (adj > 0) {
+        in_dpi_hook = false;
+        return adj;
+    }
     
-    return (UINT)(dpi * g_scaleMultiplier);
+    UINT result = (UINT)(96.0 * g_scaleMultiplier);
+    in_dpi_hook = false;
+    return result;
 }
 
 // removed GetSystemMetricsForDpi_Hook
-
-typedef int(WINAPI* GetSystemMetricsForDpi_t)(int nIndex, UINT dpi);
-GetSystemMetricsForDpi_t GetSystemMetricsForDpi_Orig;
-
-int WINAPI GetSystemMetricsForDpi_Hook(int nIndex, UINT dpi) {
-    if (dpi > 0) dpi = (UINT)(dpi * g_scaleMultiplier);
-    int metric = GetSystemMetricsForDpi_Orig(nIndex, dpi);
-    
-    void* retAddr = _ReturnAddress();
-    if (retAddr >= g_user32_start && retAddr < g_user32_end) {
-        return metric;
-    }
-    
-    return metric;
-}
 
 typedef int(WINAPI* GetSystemMetrics_t)(int nIndex);
 GetSystemMetrics_t GetSystemMetrics_Orig;
 
 int WINAPI GetSystemMetrics_Hook(int nIndex) {
+    if (in_dpi_hook) {
+        return GetSystemMetrics_Orig(nIndex);
+    }
+    in_dpi_hook = true;
     int metric = GetSystemMetrics_Orig(nIndex);
     
     void* retAddr = _ReturnAddress();
-    if (retAddr >= g_user32_start && retAddr < g_user32_end) {
-        return metric;
+    if (IsInternalOSCall(retAddr)) {
+        if (g_isWlmail || g_isMmc || g_isNotepad) {
+            in_dpi_hook = false;
+            return metric;
+        }
     }
 
     if (metric > 0) {
@@ -151,98 +375,155 @@ int WINAPI GetSystemMetrics_Hook(int nIndex) {
             case SM_CYFULLSCREEN:
             case SM_CXMINTRACK:
             case SM_CYMINTRACK:
+                in_dpi_hook = false;
                 return metric; // Skip scaling bounds/screen sizes
-            case SM_CYMENU:
-            case SM_CXMENUSIZE:
-            case SM_CYMENUSIZE:
-            case SM_CXMENUCHECK:
-            case SM_CYMENUCHECK:
-                return g_excludeMenuBar ? metric : (int)(metric * g_scaleMultiplier);
+            case SM_CYCAPTION:
+            case SM_CYSMCAPTION:
+                if (g_isWlmail) {
+                    in_dpi_hook = false;
+                    return metric; // Scaled caption causes rendering gaps in WLM ribbon
+                }
+                // fallthrough
+            case SM_CYSIZE:
+            case SM_CXSIZE:
+            case SM_CXVSCROLL:
+            case SM_CYHSCROLL:
+
+            case SM_CXSMICON:
+            case SM_CYSMICON:
+            case SM_CXICON:
+            case SM_CYICON:
+            case SM_CXCURSOR:
+            case SM_CYCURSOR:
+                metric = (int)(metric * g_scaleMultiplier);
+                in_dpi_hook = false;
+                return metric;
+            case SM_CXSIZEFRAME:
+            case SM_CYSIZEFRAME:
+            case SM_CXPADDEDBORDER:
+                if (g_isWlmail) {
+                    in_dpi_hook = false;
+                    return metric;
+                }
+                // fallthrough
             default:
-                return (int)(metric * g_scaleMultiplier);
+            {
+                if (g_excludeMenuBar && (nIndex == SM_CYMENU || nIndex == SM_CXMENUSIZE || nIndex == SM_CYMENUSIZE || nIndex == SM_CXMENUCHECK || nIndex == SM_CYMENUCHECK)) {
+                    in_dpi_hook = false;
+                    return metric;
+                }
+                UINT queryDpi = (UINT)(96.0 * g_scaleMultiplier);
+                
+                HMODULE hUser32 = GetModuleHandle(L"user32.dll");
+                if (hUser32) {
+                    typedef int(WINAPI* GetSystemMetricsForDpi_t)(int, UINT);
+                    GetSystemMetricsForDpi_t pGetSystemMetricsForDpi = (GetSystemMetricsForDpi_t)GetProcAddress(hUser32, "GetSystemMetricsForDpi");
+                    if (pGetSystemMetricsForDpi) {
+                        int metricForDpi = pGetSystemMetricsForDpi(nIndex, queryDpi);
+                        in_dpi_hook = false;
+                        return metricForDpi;
+                    }
+                }
+                
+                int resultMetric = (int)(metric * g_scaleMultiplier);
+                in_dpi_hook = false;
+                return resultMetric;
+            }
         }
     }
     
+    in_dpi_hook = false;
     return metric;
 }
 
 // removed SystemParametersInfoForDpi_Hook
 
-typedef BOOL(WINAPI* SystemParametersInfoForDpi_t)(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni, UINT dpi);
-SystemParametersInfoForDpi_t SystemParametersInfoForDpi_Orig;
-
-BOOL WINAPI SystemParametersInfoForDpi_Hook(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni, UINT dpi) {
-    if (dpi > 0) dpi = (UINT)(dpi * g_scaleMultiplier);
-    BOOL ret = SystemParametersInfoForDpi_Orig(uiAction, uiParam, pvParam, fWinIni, dpi);
-    if (!ret) return ret;
-
-    void* retAddr = _ReturnAddress();
-    if (retAddr >= g_user32_start && retAddr < g_user32_end) {
-        return ret;
-    }
-    
-    return ret;
-}
-
 typedef BOOL(WINAPI* SystemParametersInfoW_t)(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni);
 SystemParametersInfoW_t SystemParametersInfoW_Orig;
 
 BOOL WINAPI SystemParametersInfoW_Hook(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni) {
-    BOOL ret = SystemParametersInfoW_Orig(uiAction, uiParam, pvParam, fWinIni);
-    if (!ret) return ret;
-
+    if (in_dpi_hook) {
+        return SystemParametersInfoW_Orig(uiAction, uiParam, pvParam, fWinIni);
+    }
+    in_dpi_hook = true;
     void* retAddr = _ReturnAddress();
-    if (retAddr >= g_user32_start && retAddr < g_user32_end) {
+    if (IsInternalOSCall(retAddr)) {
+        BOOL res = SystemParametersInfoW_Orig(uiAction, uiParam, pvParam, fWinIni);
+        in_dpi_hook = false;
+        return res;
+    }
+    
+    BOOL ret = SystemParametersInfoW_Orig(uiAction, uiParam, pvParam, fWinIni);
+    if (!ret) {
+        in_dpi_hook = false;
         return ret;
+    }
+    
+    double actualMultiplier = g_scaleMultiplier;
+    if (GetDpiForSystem_Orig) {
+        UINT sysDpi = GetDpiForSystem_Orig();
+        if (sysDpi > 0) {
+            actualMultiplier = (96.0 * g_scaleMultiplier) / (double)sysDpi;
+        }
     }
 
     if (uiAction == SPI_GETNONCLIENTMETRICS && pvParam) {
         NONCLIENTMETRICSW* ncm = (NONCLIENTMETRICSW*)pvParam;
         
-        auto scaleFont = [](LOGFONTW& lf) {
-            lf.lfHeight = (LONG)(lf.lfHeight * g_scaleMultiplier);
-            if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * g_scaleMultiplier);
+        auto scaleFont = [actualMultiplier](LOGFONTW& lf) {
+            lf.lfHeight = (LONG)(lf.lfHeight * actualMultiplier);
+            if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * actualMultiplier);
         };
         
         scaleFont(ncm->lfCaptionFont);
         scaleFont(ncm->lfSmCaptionFont);
-        if (!g_excludeMenuBar) scaleFont(ncm->lfMenuFont);
-        // Do not scale status or message fonts to prevent double-scaling in DirectUI apps like WLM
-        // scaleFont(ncm->lfStatusFont);
-        // scaleFont(ncm->lfMessageFont);
-        
-        ncm->iBorderWidth = (int)(ncm->iBorderWidth * g_scaleMultiplier);
-        ncm->iScrollWidth = (int)(ncm->iScrollWidth * g_scaleMultiplier);
-        ncm->iScrollHeight = (int)(ncm->iScrollHeight * g_scaleMultiplier);
-        ncm->iCaptionWidth = (int)(ncm->iCaptionWidth * g_scaleMultiplier);
-        ncm->iCaptionHeight = (int)(ncm->iCaptionHeight * g_scaleMultiplier);
-        ncm->iSmCaptionWidth = (int)(ncm->iSmCaptionWidth * g_scaleMultiplier);
-        ncm->iSmCaptionHeight = (int)(ncm->iSmCaptionHeight * g_scaleMultiplier);
         if (!g_excludeMenuBar) {
-            ncm->iMenuWidth = (int)(ncm->iMenuWidth * g_scaleMultiplier);
-            ncm->iMenuHeight = (int)(ncm->iMenuHeight * g_scaleMultiplier);
+            scaleFont(ncm->lfMenuFont);
+        }
+        // Scale status or message fonts only for specific apps that need it to prevent double-scaling in DirectUI apps like WLM
+        if (g_isPdexplo || g_isMmc) {
+            scaleFont(ncm->lfStatusFont);
+            scaleFont(ncm->lfMessageFont);
+        }
+        
+        auto scaleDim = [actualMultiplier](int& dim, int minVal = 1) {
+            dim = (int)(dim * actualMultiplier);
+            if (dim < minVal) dim = minVal;
+        };
+        
+        scaleDim(ncm->iBorderWidth, 1);
+        scaleDim(ncm->iScrollWidth, 4);
+        scaleDim(ncm->iScrollHeight, 4);
+        scaleDim(ncm->iCaptionWidth, 1);
+        scaleDim(ncm->iCaptionHeight, 4);
+        scaleDim(ncm->iSmCaptionWidth, 1);
+        scaleDim(ncm->iSmCaptionHeight, 4);
+        if (!g_excludeMenuBar) {
+            scaleDim(ncm->iMenuWidth, 1);
+            scaleDim(ncm->iMenuHeight, 4);
         }
         
         // Check if cbSize is large enough to contain iPaddedBorderWidth (added in Vista)
         if (ncm->cbSize >= (unsigned)(offsetof(NONCLIENTMETRICSW, iPaddedBorderWidth) + sizeof(int))) {
-            ncm->iPaddedBorderWidth = (int)(ncm->iPaddedBorderWidth * g_scaleMultiplier);
+            scaleDim(ncm->iPaddedBorderWidth, 0);
         }
     }
     else if (uiAction == SPI_GETICONTITLELOGFONT && pvParam) {
         LOGFONTW* lf = (LOGFONTW*)pvParam;
-        lf->lfHeight = (LONG)(lf->lfHeight * g_scaleMultiplier);
-        if (lf->lfWidth != 0) lf->lfWidth = (LONG)(lf->lfWidth * g_scaleMultiplier);
+        lf->lfHeight = (LONG)(lf->lfHeight * actualMultiplier);
+        if (lf->lfWidth != 0) lf->lfWidth = (LONG)(lf->lfWidth * actualMultiplier);
     }
     else if (uiAction == SPI_GETICONMETRICS && pvParam) {
         ICONMETRICSW* im = (ICONMETRICSW*)pvParam;
         if (im->cbSize >= (unsigned)(offsetof(ICONMETRICSW, lfFont) + sizeof(LOGFONTW))) {
-            im->iHorzSpacing = (int)(im->iHorzSpacing * g_scaleMultiplier);
-            im->iVertSpacing = (int)(im->iVertSpacing * g_scaleMultiplier);
-            im->lfFont.lfHeight = (LONG)(im->lfFont.lfHeight * g_scaleMultiplier);
-            if (im->lfFont.lfWidth != 0) im->lfFont.lfWidth = (LONG)(im->lfFont.lfWidth * g_scaleMultiplier);
+            im->iHorzSpacing = (int)(im->iHorzSpacing * actualMultiplier);
+            im->iVertSpacing = (int)(im->iVertSpacing * actualMultiplier);
+            im->lfFont.lfHeight = (LONG)(im->lfFont.lfHeight * actualMultiplier);
+            if (im->lfFont.lfWidth != 0) im->lfFont.lfWidth = (LONG)(im->lfFont.lfWidth * actualMultiplier);
         }
     }
     
+    in_dpi_hook = false;
     return ret;
 }
 
@@ -250,83 +531,88 @@ typedef BOOL(WINAPI* SystemParametersInfoA_t)(UINT uiAction, UINT uiParam, PVOID
 SystemParametersInfoA_t SystemParametersInfoA_Orig;
 
 BOOL WINAPI SystemParametersInfoA_Hook(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni) {
-    BOOL ret = SystemParametersInfoA_Orig(uiAction, uiParam, pvParam, fWinIni);
-    if (!ret) return ret;
-
+    if (in_dpi_hook) {
+        return SystemParametersInfoA_Orig(uiAction, uiParam, pvParam, fWinIni);
+    }
+    in_dpi_hook = true;
     void* retAddr = _ReturnAddress();
-    if (retAddr >= g_user32_start && retAddr < g_user32_end) {
+    if (IsInternalOSCall(retAddr)) {
+        BOOL res = SystemParametersInfoA_Orig(uiAction, uiParam, pvParam, fWinIni);
+        in_dpi_hook = false;
+        return res;
+    }
+    
+    BOOL ret = SystemParametersInfoA_Orig(uiAction, uiParam, pvParam, fWinIni);
+    if (!ret) {
+        in_dpi_hook = false;
         return ret;
+    }
+    
+    double actualMultiplier = g_scaleMultiplier;
+    if (GetDpiForSystem_Orig) {
+        UINT sysDpi = GetDpiForSystem_Orig();
+        if (sysDpi > 0) {
+            actualMultiplier = (96.0 * g_scaleMultiplier) / (double)sysDpi;
+        }
     }
 
     if (uiAction == SPI_GETNONCLIENTMETRICS && pvParam) {
         NONCLIENTMETRICSA* ncm = (NONCLIENTMETRICSA*)pvParam;
         
-        auto scaleFont = [](LOGFONTA& lf) {
-            lf.lfHeight = (LONG)(lf.lfHeight * g_scaleMultiplier);
-            if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * g_scaleMultiplier);
+        auto scaleFont = [actualMultiplier](LOGFONTA& lf) {
+            lf.lfHeight = (LONG)(lf.lfHeight * actualMultiplier);
+            if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * actualMultiplier);
         };
         
         scaleFont(ncm->lfCaptionFont);
         scaleFont(ncm->lfSmCaptionFont);
-        if (!g_excludeMenuBar) scaleFont(ncm->lfMenuFont);
-        // Do not scale status or message fonts to prevent double-scaling in DirectUI apps like WLM
-        // scaleFont(ncm->lfStatusFont);
-        // scaleFont(ncm->lfMessageFont);
-        
-        ncm->iBorderWidth = (int)(ncm->iBorderWidth * g_scaleMultiplier);
-        ncm->iScrollWidth = (int)(ncm->iScrollWidth * g_scaleMultiplier);
-        ncm->iScrollHeight = (int)(ncm->iScrollHeight * g_scaleMultiplier);
-        ncm->iCaptionWidth = (int)(ncm->iCaptionWidth * g_scaleMultiplier);
-        ncm->iCaptionHeight = (int)(ncm->iCaptionHeight * g_scaleMultiplier);
-        ncm->iSmCaptionWidth = (int)(ncm->iSmCaptionWidth * g_scaleMultiplier);
-        ncm->iSmCaptionHeight = (int)(ncm->iSmCaptionHeight * g_scaleMultiplier);
         if (!g_excludeMenuBar) {
-            ncm->iMenuWidth = (int)(ncm->iMenuWidth * g_scaleMultiplier);
-            ncm->iMenuHeight = (int)(ncm->iMenuHeight * g_scaleMultiplier);
+            scaleFont(ncm->lfMenuFont);
+        }
+        // Scale status or message fonts only for specific apps that need it to prevent double-scaling in DirectUI apps like WLM
+        if (g_isPdexplo || g_isMmc) {
+            scaleFont(ncm->lfStatusFont);
+            scaleFont(ncm->lfMessageFont);
+        }
+        
+        auto scaleDim = [actualMultiplier](int& dim, int minVal = 1) {
+            dim = (int)(dim * actualMultiplier);
+            if (dim < minVal) dim = minVal;
+        };
+        
+        scaleDim(ncm->iBorderWidth, 1);
+        scaleDim(ncm->iScrollWidth, 4);
+        scaleDim(ncm->iScrollHeight, 4);
+        scaleDim(ncm->iCaptionWidth, 1);
+        scaleDim(ncm->iCaptionHeight, 4);
+        scaleDim(ncm->iSmCaptionWidth, 1);
+        scaleDim(ncm->iSmCaptionHeight, 4);
+        if (!g_excludeMenuBar) {
+            scaleDim(ncm->iMenuWidth, 1);
+            scaleDim(ncm->iMenuHeight, 4);
         }
         
         if (ncm->cbSize >= (unsigned)(offsetof(NONCLIENTMETRICSA, iPaddedBorderWidth) + sizeof(int))) {
-            ncm->iPaddedBorderWidth = (int)(ncm->iPaddedBorderWidth * g_scaleMultiplier);
+            scaleDim(ncm->iPaddedBorderWidth, 0);
         }
     }
     else if (uiAction == SPI_GETICONTITLELOGFONT && pvParam) {
         LOGFONTA* lf = (LOGFONTA*)pvParam;
-        lf->lfHeight = (LONG)(lf->lfHeight * g_scaleMultiplier);
-        if (lf->lfWidth != 0) lf->lfWidth = (LONG)(lf->lfWidth * g_scaleMultiplier);
+        lf->lfHeight = (LONG)(lf->lfHeight * actualMultiplier);
+        if (lf->lfWidth != 0) lf->lfWidth = (LONG)(lf->lfWidth * actualMultiplier);
     }
     else if (uiAction == SPI_GETICONMETRICS && pvParam) {
         ICONMETRICSA* im = (ICONMETRICSA*)pvParam;
         if (im->cbSize >= (unsigned)(offsetof(ICONMETRICSA, lfFont) + sizeof(LOGFONTA))) {
-            im->iHorzSpacing = (int)(im->iHorzSpacing * g_scaleMultiplier);
-            im->iVertSpacing = (int)(im->iVertSpacing * g_scaleMultiplier);
-            im->lfFont.lfHeight = (LONG)(im->lfFont.lfHeight * g_scaleMultiplier);
-            if (im->lfFont.lfWidth != 0) im->lfFont.lfWidth = (LONG)(im->lfFont.lfWidth * g_scaleMultiplier);
+            im->iHorzSpacing = (int)(im->iHorzSpacing * actualMultiplier);
+            im->iVertSpacing = (int)(im->iVertSpacing * actualMultiplier);
+            im->lfFont.lfHeight = (LONG)(im->lfFont.lfHeight * actualMultiplier);
+            if (im->lfFont.lfWidth != 0) im->lfFont.lfWidth = (LONG)(im->lfFont.lfWidth * actualMultiplier);
         }
     }
     
+    in_dpi_hook = false;
     return ret;
-}
-
-typedef HANDLE(WINAPI* LoadImageW_t)(HINSTANCE hInst, LPCWSTR name, UINT type, int cx, int cy, UINT fuLoad);
-LoadImageW_t LoadImageW_Orig;
-
-HANDLE WINAPI LoadImageW_Hook(HINSTANCE hInst, LPCWSTR name, UINT type, int cx, int cy, UINT fuLoad) {
-    if (cx > 0 && cy > 0 && type == IMAGE_ICON) {
-        cx = (int)(cx * g_scaleMultiplier);
-        cy = (int)(cy * g_scaleMultiplier);
-    }
-    return LoadImageW_Orig(hInst, name, type, cx, cy, fuLoad);
-}
-
-typedef HANDLE(WINAPI* LoadImageA_t)(HINSTANCE hInst, LPCSTR name, UINT type, int cx, int cy, UINT fuLoad);
-LoadImageA_t LoadImageA_Orig;
-
-HANDLE WINAPI LoadImageA_Hook(HINSTANCE hInst, LPCSTR name, UINT type, int cx, int cy, UINT fuLoad) {
-    if (cx > 0 && cy > 0 && type == IMAGE_ICON) {
-        cx = (int)(cx * g_scaleMultiplier);
-        cy = (int)(cy * g_scaleMultiplier);
-    }
-    return LoadImageA_Orig(hInst, name, type, cx, cy, fuLoad);
 }
 
 // -------------------------------------------------------------------------
@@ -338,43 +624,178 @@ GetThemeSysSize_t GetThemeSysSize_Orig;
 
 int WINAPI GetThemeSysSize_Hook(HANDLE hTheme, int iSizeId) {
     int metric = GetThemeSysSize_Orig(hTheme, iSizeId);
-    if (metric > 0) return (int)(metric * g_scaleMultiplier);
+    if ((g_isMmc || g_isWlmail) && !in_dpi_hook && metric > 0) {
+        in_dpi_hook = true;
+        metric = (int)(metric * g_scaleMultiplier);
+        in_dpi_hook = false;
+    }
     return metric;
 }
 
-typedef HRESULT(WINAPI* GetThemeSysFont_t)(HANDLE hTheme, int iFontId, LOGFONTW* plf);
-GetThemeSysFont_t GetThemeSysFont_Orig;
+typedef HRESULT(WINAPI* GetThemeMetric_t)(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, int iPropId, int* piVal);
+GetThemeMetric_t GetThemeMetric_Orig;
 
-HRESULT WINAPI GetThemeSysFont_Hook(HANDLE hTheme, int iFontId, LOGFONTW* plf) {
-    HRESULT hr = GetThemeSysFont_Orig(hTheme, iFontId, plf);
-    if (SUCCEEDED(hr) && plf) {
-        plf->lfHeight = (LONG)(plf->lfHeight * g_scaleMultiplier);
-        if (plf->lfWidth != 0) plf->lfWidth = (LONG)(plf->lfWidth * g_scaleMultiplier);
+HRESULT WINAPI GetThemeMetric_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, int iPropId, int* piVal) {
+    HRESULT hr = GetThemeMetric_Orig(hTheme, hdc, iPartId, iStateId, iPropId, piVal);
+    if ((g_isMmc || g_isWlmail) && SUCCEEDED(hr) && piVal) {
+        // TMT_WIDTH=1201, TMT_HEIGHT=1202, TMT_TEXTSIZE=2403
+        if (iPropId == 1201 || iPropId == 1202 || iPropId == 2403) {
+            *piVal = (int)(*piVal * g_scaleMultiplier);
+        }
     }
     return hr;
 }
 
-typedef HRESULT(WINAPI* GetThemePartSize_t)(HANDLE hTheme, HDC hdc, int iPartId, int iStateId, PVOID prc, int eSize, SIZE* psz);
+typedef HRESULT(WINAPI* GetThemePartSize_t)(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT prc, THEMESIZE eSize, SIZE* psz);
 GetThemePartSize_t GetThemePartSize_Orig;
 
-HRESULT WINAPI GetThemePartSize_Hook(HANDLE hTheme, HDC hdc, int iPartId, int iStateId, PVOID prc, int eSize, SIZE* psz) {
+HRESULT WINAPI GetThemePartSize_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT prc, THEMESIZE eSize, SIZE* psz) {
     HRESULT hr = GetThemePartSize_Orig(hTheme, hdc, iPartId, iStateId, prc, eSize, psz);
-    if (SUCCEEDED(hr) && psz) {
-        psz->cx = (int)(psz->cx * g_scaleMultiplier);
-        psz->cy = (int)(psz->cy * g_scaleMultiplier);
+    if ((g_isMmc || g_isWlmail) && SUCCEEDED(hr) && psz) {
+        psz->cx = (LONG)(psz->cx * g_scaleMultiplier);
+        psz->cy = (LONG)(psz->cy * g_scaleMultiplier);
     }
     return hr;
 }
+
+typedef HRESULT(WINAPI* GetThemeMargins_t)(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, int iPropId, LPCRECT prc, MARGINS* pMargins);
+GetThemeMargins_t GetThemeMargins_Orig;
+
+HRESULT WINAPI GetThemeMargins_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, int iPropId, LPCRECT prc, MARGINS* pMargins) {
+    HRESULT hr = GetThemeMargins_Orig(hTheme, hdc, iPartId, iStateId, iPropId, prc, pMargins);
+    if (g_isMmc && SUCCEEDED(hr) && pMargins) {
+        pMargins->cxLeftWidth = (int)(pMargins->cxLeftWidth * g_scaleMultiplier);
+        pMargins->cxRightWidth = (int)(pMargins->cxRightWidth * g_scaleMultiplier);
+        pMargins->cyTopHeight = (int)(pMargins->cyTopHeight * g_scaleMultiplier);
+        pMargins->cyBottomHeight = (int)(pMargins->cyBottomHeight * g_scaleMultiplier);
+    }
+    return hr;
+}
+
+typedef HRESULT(WINAPI* GetThemeRect_t)(HTHEME hTheme, int iPartId, int iStateId, int iPropId, LPRECT pRect);
+GetThemeRect_t GetThemeRect_Orig;
+
+HRESULT WINAPI GetThemeRect_Hook(HTHEME hTheme, int iPartId, int iStateId, int iPropId, LPRECT pRect) {
+    HRESULT hr = GetThemeRect_Orig(hTheme, iPartId, iStateId, iPropId, pRect);
+    if (g_isMmc && SUCCEEDED(hr) && pRect) {
+        pRect->left = (int)(pRect->left * g_scaleMultiplier);
+        pRect->top = (int)(pRect->top * g_scaleMultiplier);
+        pRect->right = (int)(pRect->right * g_scaleMultiplier);
+        pRect->bottom = (int)(pRect->bottom * g_scaleMultiplier);
+    }
+    return hr;
+}
+
+// -------------------------------------------------------------------------
+// IMAGE LIST HOOKS FOR MMC
+// -------------------------------------------------------------------------
+
+typedef HIMAGELIST(WINAPI* ImageList_Create_t)(int cx, int cy, UINT flags, int cInitial, int cGrow);
+ImageList_Create_t ImageList_Create_Orig;
+
+HIMAGELIST WINAPI ImageList_Create_Hook(int cx, int cy, UINT flags, int cInitial, int cGrow) {
+    if (g_isMmc && cx > 0 && cy > 0) {
+        cx = (int)(cx * g_scaleMultiplier);
+        cy = (int)(cy * g_scaleMultiplier);
+    }
+    return ImageList_Create_Orig(cx, cy, flags, cInitial, cGrow);
+}
+
+// -------------------------------------------------------------------------
+// MESSAGE HOOKS FOR MMC NAVPANE
+// -------------------------------------------------------------------------
 
 typedef int(WINAPI* GetDeviceCaps_t)(HDC hdc, int index);
 GetDeviceCaps_t GetDeviceCaps_Orig;
 
+typedef HRESULT(WINAPI* DrawThemeBackground_t)(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT pRect, LPCRECT pClipRect);
+DrawThemeBackground_t DrawThemeBackground_Orig;
+
+typedef HTHEME(WINAPI* OpenThemeData_t)(HWND hwnd, LPCWSTR pszClassList);
+OpenThemeData_t OpenThemeData_Orig;
+
+HTHEME WINAPI OpenThemeData_Hook(HWND hwnd, LPCWSTR pszClassList) {
+    HTHEME hTheme = OpenThemeData_Orig(hwnd, pszClassList);
+    if (hTheme && pszClassList) {
+        std::lock_guard<std::mutex> lock(g_themeMutex);
+        g_themeClasses[hTheme] = pszClassList;
+    }
+    return hTheme;
+}
+
+typedef HRESULT(WINAPI* CloseThemeData_t)(HTHEME hTheme);
+CloseThemeData_t CloseThemeData_Orig;
+
+HRESULT WINAPI CloseThemeData_Hook(HTHEME hTheme) {
+    if (hTheme) {
+        std::lock_guard<std::mutex> lock(g_themeMutex);
+        g_themeClasses.erase(hTheme);
+    }
+    return CloseThemeData_Orig(hTheme);
+}
+
+HRESULT WINAPI DrawThemeBackground_Hook(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCRECT pRect, LPCRECT pClipRect) {
+    if (g_isWlmail && pRect && hTheme) {
+        std::wstring cls;
+        {
+            std::lock_guard<std::mutex> lock(g_themeMutex);
+            auto it = g_themeClasses.find(hTheme);
+            if (it != g_themeClasses.end()) cls = it->second;
+        }
+        
+        // The artifact is a gap below the "File" button.
+        // We'll try to find the ribbon background color more accurately.
+        if (!cls.empty() && (cls.find(L"Ribbon") != std::wstring::npos || 
+                           cls.find(L"AppMenu") != std::wstring::npos)) {
+            
+            if (pRect->left <= 2 && pRect->top < 150 && iStateId == 1) {
+                // Use a slightly more accurate blue for WLM Ribbon File button area.
+                COLORREF wlmBlue = RGB(19, 122, 247); 
+                HBRUSH br = CreateSolidBrush(wlmBlue);
+                
+                RECT rc = *pRect;
+                rc.bottom += 15; 
+                rc.right += 2;
+                FillRect(hdc, &rc, br);
+                DeleteObject(br);
+                
+                if (iPartId == 1) return S_OK;
+            }
+        }
+    }
+    return DrawThemeBackground_Orig(hTheme, hdc, iPartId, iStateId, pRect, pClipRect);
+}
+
 int WINAPI GetDeviceCaps_Hook(HDC hdc, int index) {
     if (index == LOGPIXELSX || index == LOGPIXELSY) {
+        if (in_dpi_hook) {
+            return GetDeviceCaps_Orig(hdc, index);
+        }
+        in_dpi_hook = true;
         int dpi = GetDeviceCaps_Orig(hdc, index);
         if (dpi > 0) {
-            return (int)(dpi * g_scaleMultiplier);
+            void* retAddr = _ReturnAddress();
+            if (g_isMmc) {
+                // For MMC, we specifically want to scale even internal calls 
+                // because the snap-ins are often a mess of mixed architectures.
+                int scaled = (int)(dpi * g_scaleMultiplier);
+                in_dpi_hook = false;
+                return scaled;
+            }
+            if (g_isWlmail && IsInternalOSCall(retAddr)) {
+                in_dpi_hook = false;
+                return dpi; // Bypass for user32/gdi32/comctl32/uxtheme internal calls
+            }
+            UINT adj = GetAdjustedDpiForModule(retAddr);
+            if (adj > 0) {
+                in_dpi_hook = false;
+                return (int)adj;
+            }
+            int resultDpi = (int)(96.0 * g_scaleMultiplier);
+            in_dpi_hook = false;
+            return resultDpi;
         }
+        in_dpi_hook = false;
     }
     return GetDeviceCaps_Orig(hdc, index);
 }
@@ -383,11 +804,21 @@ typedef HRESULT(WINAPI* GetDpiForMonitor_t)(HMONITOR hmonitor, MONITOR_DPI_TYPE 
 GetDpiForMonitor_t GetDpiForMonitor_Orig;
 
 HRESULT WINAPI GetDpiForMonitor_Hook(HMONITOR hmonitor, MONITOR_DPI_TYPE dpiType, UINT* dpiX, UINT* dpiY) {
+    if (in_dpi_hook) {
+        return GetDpiForMonitor_Orig(hmonitor, dpiType, dpiX, dpiY);
+    }
+    in_dpi_hook = true;
     HRESULT hr = GetDpiForMonitor_Orig(hmonitor, dpiType, dpiX, dpiY);
+    void* retAddr = _ReturnAddress();
+    if (IsInternalOSCall(retAddr)) {
+        in_dpi_hook = false;
+        return hr;
+    }
     if (SUCCEEDED(hr)) {
         if (dpiX) *dpiX = (UINT)(*dpiX * g_scaleMultiplier);
         if (dpiY) *dpiY = (UINT)(*dpiY * g_scaleMultiplier);
     }
+    in_dpi_hook = false;
     return hr;
 }
 
@@ -412,154 +843,114 @@ void WINAPI D2D1GetDesktopDpi_Hook(FLOAT *dpiX, FLOAT *dpiY) {
 }
 
 // -------------------------------------------------------------------------
-// MORE COMPAT HOOKS
+// MORE COMPAT HOOKS (Removed for simplicity and stability)
+// -------------------------------------------------------------------------
+
+
+// -------------------------------------------------------------------------
+// MESSAGE HOOKS FOR MMC NAVPANE
 // -------------------------------------------------------------------------
 
 typedef LRESULT(WINAPI* SendMessageW_t)(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam);
 SendMessageW_t SendMessageW_Orig;
 
-#ifndef TB_SETBITMAPSIZE
-#define TB_SETBITMAPSIZE (WM_USER + 32)
-#endif
-#ifndef TB_SETBUTTONSIZE
-#define TB_SETBUTTONSIZE (WM_USER + 31)
-#endif
-
-LRESULT WINAPI SendMessageW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    if (Msg == TB_SETBITMAPSIZE || Msg == TB_SETBUTTONSIZE) {
-        int cx = LOWORD(lParam);
-        int cy = HIWORD(lParam);
-        if (cx > 0 && cy > 0) {
-            cx = (int)(cx * g_scaleMultiplier);
-            cy = (int)(cy * g_scaleMultiplier);
-            lParam = MAKELPARAM(cx, cy);
-        }
-    } else if (Msg == WM_SETFONT && wParam) {
-        wchar_t className[256];
-        if (GetClassNameW(hWnd, className, ARRAYSIZE(className)) > 0) {
-            if (_wcsicmp(className, L"ToolbarWindow32") == 0) {
-                HFONT hFont = (HFONT)wParam;
-                LOGFONTW lf;
-                if (GetObjectW(hFont, sizeof(lf), &lf)) {
-                    lf.lfHeight = (LONG)(lf.lfHeight * g_scaleMultiplier);
-                    if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * g_scaleMultiplier);
-                    HFONT hNewFont = CreateFontIndirectW(&lf);
-                    if (hNewFont) {
-                        wParam = (WPARAM)hNewFont;
-                    }
-                }
-            }
-        }
-    }
-    return SendMessageW_Orig(hWnd, Msg, wParam, lParam);
-}
-
 typedef LRESULT(WINAPI* SendMessageA_t)(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam);
 SendMessageA_t SendMessageA_Orig;
 
-LRESULT WINAPI SendMessageA_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    if (Msg == TB_SETBITMAPSIZE || Msg == TB_SETBUTTONSIZE) {
-        int cx = LOWORD(lParam);
-        int cy = HIWORD(lParam);
-        if (cx > 0 && cy > 0) {
-            cx = (int)(cx * g_scaleMultiplier);
-            cy = (int)(cy * g_scaleMultiplier);
-            lParam = MAKELPARAM(cx, cy);
+LRESULT WINAPI SendMessageW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    if (g_isMmc) {
+        if (Msg == WM_SETFONT && wParam) {
+            HFONT hScaled = GetOrCreateScaledFont((HFONT)wParam);
+            if (hScaled) wParam = (WPARAM)hScaled;
         }
-    } else if (Msg == WM_SETFONT && wParam) {
-        char className[256];
-        if (GetClassNameA(hWnd, className, ARRAYSIZE(className)) > 0) {
-            if (_stricmp(className, "ToolbarWindow32") == 0) {
-                HFONT hFont = (HFONT)wParam;
-                LOGFONTA lf;
-                if (GetObjectA(hFont, sizeof(lf), &lf)) {
-                    lf.lfHeight = (LONG)(lf.lfHeight * g_scaleMultiplier);
-                    if (lf.lfWidth != 0) lf.lfWidth = (LONG)(lf.lfWidth * g_scaleMultiplier);
-                    HFONT hNewFont = CreateFontIndirectA(&lf);
-                    if (hNewFont) {
-                        wParam = (WPARAM)hNewFont;
+
+        if (Msg == TVM_SETITEMHEIGHT || Msg == TVM_SETINDENT ||
+            Msg == TB_SETBUTTONSIZE || Msg == TB_SETBITMAPSIZE ||
+            Msg == TB_SETPADDING || Msg == TB_SETINDENT) {
+            
+            wchar_t className[256];
+            if (GetClassNameW(hWnd, className, ARRAYSIZE(className)) > 0) {
+                std::wstring clsName(className);
+                if (CaseInsensitiveContains(clsName, L"SysTreeView32")) {
+                    if (Msg == TVM_SETITEMHEIGHT || Msg == TVM_SETINDENT) {
+                        int val = (int)wParam;
+                        if (val > 0 && val < 200) { 
+                            wParam = (WPARAM)(int)(val * g_scaleMultiplier);
+                        }
+                    }
+                } else if (CaseInsensitiveContains(clsName, L"ToolbarWindow32")) {
+                    if (Msg == TB_SETBUTTONSIZE || Msg == TB_SETBITMAPSIZE) {
+                        int cx = LOWORD(lParam);
+                        int cy = HIWORD(lParam);
+                        if (cx > 0 && cy > 0 && cx < 300) { 
+                            lParam = MAKELPARAM((int)(cx * g_scaleMultiplier), (int)(cy * g_scaleMultiplier));
+                        }
+                    } else if (Msg == TB_SETPADDING) {
+                        int padding = (int)lParam;
+                        lParam = (LPARAM)(int)(padding * g_scaleMultiplier);
                     }
                 }
             }
         }
     }
-    return SendMessageA_Orig(hWnd, Msg, wParam, lParam);
-}
-
-// removed CreateFontIndirectA_Hook / CreateFontIndirectW_Hook
-
-HBITMAP ScaleBitmap(HBITMAP hbm, double scaleMultiplier) {
-    if (!hbm) return NULL;
-    BITMAP bm;
-    if (!GetObjectW(hbm, sizeof(bm), &bm)) return NULL;
+    LRESULT res = SendMessageW_Orig(hWnd, Msg, wParam, lParam);
     
-    int newWidth = (int)(bm.bmWidth * scaleMultiplier);
-    int newHeight = (int)(bm.bmHeight * scaleMultiplier);
-    
-    HDC hdcScreen = GetDC(NULL);
-    HDC hdcSrc = CreateCompatibleDC(hdcScreen);
-    HDC hdcDest = CreateCompatibleDC(hdcScreen);
-    
-    HBITMAP hbmNew = CreateCompatibleBitmap(hdcScreen, newWidth, newHeight);
-    
-    HGDIOBJ hOldSrc = SelectObject(hdcSrc, hbm);
-    HGDIOBJ hOldDest = SelectObject(hdcDest, hbmNew);
-    
-    SetStretchBltMode(hdcDest, HALFTONE);
-    SetBrushOrgEx(hdcDest, 0, 0, NULL);
-    
-    StretchBlt(hdcDest, 0, 0, newWidth, newHeight, hdcSrc, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
-    
-    SelectObject(hdcSrc, hOldSrc);
-    SelectObject(hdcDest, hOldDest);
-    
-    DeleteDC(hdcSrc);
-    DeleteDC(hdcDest);
-    ReleaseDC(NULL, hdcScreen);
-    
-    return hbmNew;
-}
-
-typedef HIMAGELIST(WINAPI* ImageList_Create_t)(int cx, int cy, UINT flags, int cInitial, int cGrow);
-ImageList_Create_t ImageList_Create_Orig;
-
-HIMAGELIST WINAPI ImageList_Create_Hook(int cx, int cy, UINT flags, int cInitial, int cGrow) {
-    if (cx > 0 && cy > 0) {
-        cx = (int)(cx * g_scaleMultiplier);
-        cy = (int)(cy * g_scaleMultiplier);
+    // Post-processing for TreeView to ensure height is recalculated after font change
+    if (g_isMmc && Msg == WM_SETFONT) {
+        char cls[256];
+        if (GetClassNameA(hWnd, cls, sizeof(cls)) && strstr(cls, "SysTreeView32")) {
+             SendMessageA_Orig(hWnd, TVM_SETITEMHEIGHT, (WPARAM)-1, 0);
+        }
     }
-    return ImageList_Create_Orig(cx, cy, flags, cInitial, cGrow);
+    return res;
 }
 
-typedef int(WINAPI* ImageList_Add_t)(HIMAGELIST himl, HBITMAP hbmImage, HBITMAP hbmMask);
-ImageList_Add_t ImageList_Add_Orig;
+LRESULT WINAPI SendMessageA_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    if (g_isMmc) {
+        if (Msg == WM_SETFONT && wParam) {
+            HFONT hScaled = GetOrCreateScaledFont((HFONT)wParam);
+            if (hScaled) wParam = (WPARAM)hScaled;
+        }
 
-int WINAPI ImageList_Add_Hook(HIMAGELIST himl, HBITMAP hbmImage, HBITMAP hbmMask) {
-    HBITMAP hbmScaledImage = ScaleBitmap(hbmImage, g_scaleMultiplier);
-    HBITMAP hbmScaledMask = hbmMask ? ScaleBitmap(hbmMask, g_scaleMultiplier) : NULL;
-    
-    int ret = ImageList_Add_Orig(himl, hbmScaledImage ? hbmScaledImage : hbmImage, hbmScaledMask ? hbmScaledMask : hbmMask);
-    
-    if (hbmScaledImage) DeleteObject(hbmScaledImage);
-    if (hbmScaledMask) DeleteObject(hbmScaledMask);
-    
-    return ret;
+        if (Msg == TVM_SETITEMHEIGHT || Msg == TVM_SETINDENT ||
+            Msg == TB_SETBUTTONSIZE || Msg == TB_SETBITMAPSIZE ||
+            Msg == TB_SETPADDING || Msg == TB_SETINDENT) {
+            
+            char className[256];
+            if (GetClassNameA(hWnd, className, ARRAYSIZE(className)) > 0) {
+                std::string clsName(className);
+                std::transform(clsName.begin(), clsName.end(), clsName.begin(), ::tolower);
+                if (clsName.find("systreeview32") != std::string::npos) {
+                    if (Msg == TVM_SETITEMHEIGHT || Msg == TVM_SETINDENT) {
+                        int val = (int)wParam;
+                        if (val > 0 && val < 200) { 
+                            wParam = (WPARAM)(int)(val * g_scaleMultiplier);
+                        }
+                    }
+                } else if (clsName.find("toolbarwindow32") != std::string::npos) {
+                    if (Msg == TB_SETBUTTONSIZE || Msg == TB_SETBITMAPSIZE) {
+                        int cx = LOWORD(lParam);
+                        int cy = HIWORD(lParam);
+                        if (cx > 0 && cy > 0 && cx < 300) {
+                            lParam = MAKELPARAM((int)(cx * g_scaleMultiplier), (int)(cy * g_scaleMultiplier));
+                        }
+                    } else if (Msg == TB_SETPADDING) {
+                        int padding = (int)lParam;
+                        lParam = (LPARAM)(int)(padding * g_scaleMultiplier);
+                    }
+                }
+            }
+        }
+    }
+    LRESULT res = SendMessageA_Orig(hWnd, Msg, wParam, lParam);
+    if (g_isMmc && Msg == WM_SETFONT) {
+        char cls[256];
+        if (GetClassNameA(hWnd, cls, sizeof(cls)) && strstr(cls, "SysTreeView32")) {
+             SendMessageA_Orig(hWnd, TVM_SETITEMHEIGHT, (WPARAM)-1, 0);
+        }
+    }
+    return res;
 }
-
-typedef int(WINAPI* ImageList_AddMasked_t)(HIMAGELIST himl, HBITMAP hbmImage, COLORREF crMask);
-ImageList_AddMasked_t ImageList_AddMasked_Orig;
-
-int WINAPI ImageList_AddMasked_Hook(HIMAGELIST himl, HBITMAP hbmImage, COLORREF crMask) {
-    HBITMAP hbmScaledImage = ScaleBitmap(hbmImage, g_scaleMultiplier);
-    int ret = ImageList_AddMasked_Orig(himl, hbmScaledImage ? hbmScaledImage : hbmImage, crMask);
-    if (hbmScaledImage) DeleteObject(hbmScaledImage);
-    return ret;
-}
-
-// Ensure the toolbar's font itself scales (if the user wants the text big)
-// Actually, earlier CreateFont did that. Wait, if CreateFont is disabled, pdexplo font doesn't scale.
-// If the user wants the text beside it to scale, we must scale the font for Toolbar or the whole app.
-// But we avoided it to not double-scale WLM.
 
 // -------------------------------------------------------------------------
 // CHROMIUM COMMAND LINE INJECTION
@@ -606,6 +997,10 @@ void LoadSettings() {
     }
 
     g_shouldApply = false;
+    g_isPdexplo = CaseInsensitiveContains(exeName, L"pdexplo.exe");
+    g_isWlmail = CaseInsensitiveContains(exeName, L"wlmail.exe");
+    g_isMmc = CaseInsensitiveContains(exeName, L"mmc.exe");
+    g_isNotepad = CaseInsensitiveContains(exeName, L"notepad.exe");
 
     for (int i = 0;; i++) {
         wchar_t key[128];
@@ -663,6 +1058,33 @@ BOOL Wh_ModInit() {
         }
     }
 
+    HMODULE hGdi32 = GetModuleHandle(L"gdi32.dll");
+    if (hGdi32) {
+        MODULEINFO mi = {0};
+        if (GetModuleInformation(GetCurrentProcess(), hGdi32, &mi, sizeof(mi))) {
+            g_gdi32_start = mi.lpBaseOfDll;
+            g_gdi32_end = (PBYTE)mi.lpBaseOfDll + mi.SizeOfImage;
+        }
+    }
+
+    HMODULE hComctl32 = GetModuleHandle(L"comctl32.dll");
+    if (hComctl32) {
+        MODULEINFO mi = {0};
+        if (GetModuleInformation(GetCurrentProcess(), hComctl32, &mi, sizeof(mi))) {
+            g_comctl32_start = mi.lpBaseOfDll;
+            g_comctl32_end = (PBYTE)mi.lpBaseOfDll + mi.SizeOfImage;
+        }
+    }
+
+    HMODULE hUxTheme = GetModuleHandle(L"uxtheme.dll");
+    if (hUxTheme) {
+        MODULEINFO mi = {0};
+        if (GetModuleInformation(GetCurrentProcess(), hUxTheme, &mi, sizeof(mi))) {
+            g_uxtheme_start = mi.lpBaseOfDll;
+            g_uxtheme_end = (PBYTE)mi.lpBaseOfDll + mi.SizeOfImage;
+        }
+    }
+
     if (g_enableDpiHooks) {
         if (hUser32) {
             void* pGetDpiForWindow = (void*)GetProcAddress(hUser32, "GetDpiForWindow");
@@ -691,9 +1113,7 @@ BOOL Wh_ModInit() {
             }
             void* pSystemParametersInfoForDpi = (void*)GetProcAddress(hUser32, "SystemParametersInfoForDpi");
             if (pSystemParametersInfoForDpi) {
-                Wh_SetFunctionHook(pSystemParametersInfoForDpi,
-                                   (void*)SystemParametersInfoForDpi_Hook,
-                                   (void**)&SystemParametersInfoForDpi_Orig);
+                // Hook removed
             }
             void* pSystemParametersInfoW = (void*)GetProcAddress(hUser32, "SystemParametersInfoW");
             if (pSystemParametersInfoW) {
@@ -706,18 +1126,6 @@ BOOL Wh_ModInit() {
                 Wh_SetFunctionHook(pSystemParametersInfoA,
                                    (void*)SystemParametersInfoA_Hook,
                                    (void**)&SystemParametersInfoA_Orig);
-            }
-            void* pLoadImageW = (void*)GetProcAddress(hUser32, "LoadImageW");
-            if (pLoadImageW) {
-                Wh_SetFunctionHook(pLoadImageW,
-                                   (void*)LoadImageW_Hook,
-                                   (void**)&LoadImageW_Orig);
-            }
-            void* pLoadImageA = (void*)GetProcAddress(hUser32, "LoadImageA");
-            if (pLoadImageA) {
-                Wh_SetFunctionHook(pLoadImageA,
-                                   (void*)LoadImageA_Hook,
-                                   (void**)&LoadImageA_Orig);
             }
             void* pSendMessageW = (void*)GetProcAddress(hUser32, "SendMessageW");
             if (pSendMessageW) {
@@ -741,9 +1149,86 @@ BOOL Wh_ModInit() {
                                    (void*)GetDeviceCaps_Hook,
                                    (void**)&GetDeviceCaps_Orig);
             }
-// removed CreateFontIndirect hook injection
+            void* pCreateFontIndirectW = (void*)GetProcAddress(hGdi32, "CreateFontIndirectW");
+            if (pCreateFontIndirectW) {
+                Wh_SetFunctionHook(pCreateFontIndirectW,
+                                   (void*)CreateFontIndirectW_Hook,
+                                   (void**)&CreateFontIndirectW_Orig);
+            }
+            void* pCreateFontW = (void*)GetProcAddress(hGdi32, "CreateFontW");
+            if (pCreateFontW) {
+                Wh_SetFunctionHook(pCreateFontW,
+                                   (void*)CreateFontW_Hook,
+                                   (void**)&CreateFontW_Orig);
+            }
         }
-        
+
+        if (hUxTheme) {
+            void* pGetThemeSysSize = (void*)GetProcAddress(hUxTheme, "GetThemeSysSize");
+            if (pGetThemeSysSize) {
+                Wh_SetFunctionHook(pGetThemeSysSize,
+                                   (void*)GetThemeSysSize_Hook,
+                                   (void**)&GetThemeSysSize_Orig);
+            }
+            void* pOpenThemeData = (void*)GetProcAddress(hUxTheme, "OpenThemeData");
+            if (pOpenThemeData) {
+                Wh_SetFunctionHook(pOpenThemeData,
+                                   (void*)OpenThemeData_Hook,
+                                   (void**)&OpenThemeData_Orig);
+            }
+            void* pCloseThemeData = (void*)GetProcAddress(hUxTheme, "CloseThemeData");
+            if (pCloseThemeData) {
+                Wh_SetFunctionHook(pCloseThemeData,
+                                   (void*)CloseThemeData_Hook,
+                                   (void**)&CloseThemeData_Orig);
+            }
+            void* pDrawThemeBackground = (void*)GetProcAddress(hUxTheme, "DrawThemeBackground");
+            if (pDrawThemeBackground) {
+                Wh_SetFunctionHook(pDrawThemeBackground,
+                                   (void*)DrawThemeBackground_Hook,
+                                   (void**)&DrawThemeBackground_Orig);
+            }
+            void* pGetThemeMetric = (void*)GetProcAddress(hUxTheme, "GetThemeMetric");
+            if (pGetThemeMetric) {
+                Wh_SetFunctionHook(pGetThemeMetric,
+                                   (void*)GetThemeMetric_Hook,
+                                   (void**)&GetThemeMetric_Orig);
+            }
+            void* pGetThemePartSize = (void*)GetProcAddress(hUxTheme, "GetThemePartSize");
+            if (pGetThemePartSize) {
+                Wh_SetFunctionHook(pGetThemePartSize,
+                                   (void*)GetThemePartSize_Hook,
+                                   (void**)&GetThemePartSize_Orig);
+            }
+            void* pGetThemeMargins = (void*)GetProcAddress(hUxTheme, "GetThemeMargins");
+            if (pGetThemeMargins) {
+                Wh_SetFunctionHook(pGetThemeMargins,
+                                   (void*)GetThemeMargins_Hook,
+                                   (void**)&GetThemeMargins_Orig);
+            }
+            void* pGetThemeRect = (void*)GetProcAddress(hUxTheme, "GetThemeRect");
+            if (pGetThemeRect) {
+                Wh_SetFunctionHook(pGetThemeRect,
+                                   (void*)GetThemeRect_Hook,
+                                   (void**)&GetThemeRect_Orig);
+            }
+        }
+
+        if (hUser32) {
+            void* pLoadImageW = (void*)GetProcAddress(hUser32, "LoadImageW");
+            if (pLoadImageW) {
+                Wh_SetFunctionHook(pLoadImageW,
+                                   (void*)LoadImageW_Hook,
+                                   (void**)&LoadImageW_Orig);
+            }
+            void* pLoadImageA = (void*)GetProcAddress(hUser32, "LoadImageA");
+            if (pLoadImageA) {
+                Wh_SetFunctionHook(pLoadImageA,
+                                   (void*)LoadImageA_Hook,
+                                   (void**)&LoadImageA_Orig);
+            }
+        }
+
         HMODULE hComctl32 = GetModuleHandle(L"comctl32.dll");
         if (hComctl32) {
             void* pImageList_Create = (void*)GetProcAddress(hComctl32, "ImageList_Create");
@@ -751,18 +1236,6 @@ BOOL Wh_ModInit() {
                 Wh_SetFunctionHook(pImageList_Create,
                                    (void*)ImageList_Create_Hook,
                                    (void**)&ImageList_Create_Orig);
-            }
-            void* pImageList_Add = (void*)GetProcAddress(hComctl32, "ImageList_Add");
-            if (pImageList_Add) {
-                Wh_SetFunctionHook(pImageList_Add,
-                                   (void*)ImageList_Add_Hook,
-                                   (void**)&ImageList_Add_Orig);
-            }
-            void* pImageList_AddMasked = (void*)GetProcAddress(hComctl32, "ImageList_AddMasked");
-            if (pImageList_AddMasked) {
-                Wh_SetFunctionHook(pImageList_AddMasked,
-                                   (void*)ImageList_AddMasked_Hook,
-                                   (void**)&ImageList_AddMasked_Orig);
             }
         }
 
@@ -789,28 +1262,6 @@ BOOL Wh_ModInit() {
                 Wh_SetFunctionHook(pD2D1GetDesktopDpi,
                                    (void*)D2D1GetDesktopDpi_Hook,
                                    (void**)&D2D1GetDesktopDpi_Orig);
-            }
-        }
-        
-        HMODULE hUxTheme = GetModuleHandle(L"uxtheme.dll");
-        if (hUxTheme) {
-            void* pGetThemeSysSize = (void*)GetProcAddress(hUxTheme, "GetThemeSysSize");
-            if (pGetThemeSysSize) {
-                Wh_SetFunctionHook(pGetThemeSysSize,
-                                   (void*)GetThemeSysSize_Hook,
-                                   (void**)&GetThemeSysSize_Orig);
-            }
-            void* pGetThemeSysFont = (void*)GetProcAddress(hUxTheme, "GetThemeSysFont");
-            if (pGetThemeSysFont) {
-                Wh_SetFunctionHook(pGetThemeSysFont,
-                                   (void*)GetThemeSysFont_Hook,
-                                   (void**)&GetThemeSysFont_Orig);
-            }
-            void* pGetThemePartSize = (void*)GetProcAddress(hUxTheme, "GetThemePartSize");
-            if (pGetThemePartSize) {
-                Wh_SetFunctionHook(pGetThemePartSize,
-                                   (void*)GetThemePartSize_Hook,
-                                   (void**)&GetThemePartSize_Orig);
             }
         }
     }
