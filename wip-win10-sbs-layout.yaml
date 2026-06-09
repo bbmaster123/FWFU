@@ -28,10 +28,10 @@ controlStyles:
   - target: Windows.UI.Xaml.Controls.Primitives.ToggleButton#ShowHideCompanion
     styles:
       - Visibility=Visible
-      - Margin=-642,24,641-24
+      - Margin=-642,39,641-39
   - target: Border#AcrylicOverlay
     styles:
-      - Margin=0,-66,1,-63
+      - Margin=0,-68,1,-64
       - CornerRadius=0,8,0,0
   - target: Windows.UI.Xaml.Controls.Frame
     styles:
@@ -57,14 +57,24 @@ controlStyles:
   - target: TextBlock#ZoomedOutHeading
     styles:
       - Visibility=Collapsed
+  - target: Grid#ShowMorePinnedGrid    
+    styles:
+      - Visibility=Collapsed
   - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer
     styles:
       - RenderTransform:=<TranslateTransform X="-450" />
-      - Margin=-92,-73,-152,-55
+      - Margin=-92,-42,-152,-15      
   - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer#SideBySidePinnedScrollViewer
     styles:
-      - Height=674
-      - RenderTransform:=<TranslateTransform X="275" Y="-30" />
+      - RenderTransform:=<TranslateTransform X="265" Y="20" />  
+      - Canvas.ZIndex=-1  
+  - target: ScrollViewer > ScrollContentPresenter > Border > StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu > Grid#MainContent > Frame#StartFrame > ContentPresenter > StartMenu.StartHome > Grid#PageRoot > SemanticZoom#TopLevelRoot > Grid > ScrollViewer#ScrollViewer > ScrollContentPresenter#ScrollContentPresenter > Grid > ContentPresenter#ZoomedInPresenter > GridView#AllAppsGrid > Border > Grid#SideBySidePinnedWrapper > ScrollViewer#SideBySidePinnedScrollViewer > Border#Root > Grid > ScrollContentPresenter#ScrollContentPresenter > Grid#SideBySidePinnedContent > StartMenu.PinnedList#StartMenuPinnedList > Grid#Root > GridView#PinnedList > Border > ScrollViewer#ScrollViewer > Border#Root > Grid > ScrollContentPresenter#ScrollContentPresenter
+    styles:
+      - Margin=0,0,0,-86
+  - target: Windows.UI.Xaml.Controls.GridView#LevelOneGridView
+    styles:
+      - Width=295
+      - RenderTransform:=<TranslateTransform Y="-10" />
   - target: StartDocked.NavigationPaneView
     styles:
       - Transform3D:=<CompositeTransform3D RotationZ="270" />
@@ -98,12 +108,13 @@ controlStyles:
       - Canvas.ZIndex=99
   - target: Windows.UI.Xaml.Controls.Primitives.ScrollBar
     styles:
-      - Height=725
-      - Margin=-15,12,15,0
-  - target: StartMenu.PinnedList
+      - MaxHeight=746
+      - Canvas.ZIndex=99
+      - RenderTransform:=<TranslateTransform X="-20" Y="12" />
+  - target: ScrollViewer > ScrollContentPresenter > Border > StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu > Grid#MainContent > Frame#StartFrame > ContentPresenter > StartMenu.StartHome > Grid#PageRoot > SemanticZoom#TopLevelRoot > Grid > ScrollViewer#ScrollViewer > ScrollContentPresenter#ScrollContentPresenter > Grid > ContentPresenter#ZoomedInPresenter > GridView#AllAppsGrid > Border > Grid#SideBySidePinnedWrapper > ScrollViewer#SideBySidePinnedScrollViewer
     styles:
       - MaxWidth=396
-  - target: Windows.UI.Xaml.Controls.GridView > Border > ScrollViewer
+  - target: ScrollViewer 
     styles:
       - ScrollViewer.VerticalScrollMode=2
   - target: Microsoft.UI.Xaml.Controls.DropDownButton > Grid > Windows.UI.Xaml.Controls.ContentPresenter > TextBlock
@@ -115,7 +126,7 @@ controlStyles:
   - target: Microsoft.UI.Xaml.Controls.DropDownButton
     styles:
       - Style:=<StaticResource ResourceKey="ButtonRevealStyle"/>
-      - Margin=-375,36,375,-36
+      - Margin=-375,41,375,-41
       - Width=24
       - Padding=0,4,0,4
       - Height=24
@@ -138,9 +149,7 @@ controlStyles:
   - target: Windows.UI.Xaml.Controls.GridViewItem > Border > Grid > Border#BackgroundBorder
     styles:
       - CornerRadius=0
-  - target: StartMenu.PinnedList
-    styles:
-      - Height=655
+
   - target: Windows.UI.Xaml.Controls.GridView#PinnedList > Border > Windows.UI.Xaml.Controls.ScrollViewer > Border > Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem > Border#ContentBorder@CommonStates > Grid#DroppedFlickerWorkaroundWrapper > Border
     styles:
       - CornerRadius=4
@@ -165,7 +174,7 @@ controlStyles:
       - Padding=-3,0,-1,0
   - target: StartMenu.FolderModal
     styles:
-      - RenderTransform:=<TranslateTransform X="170" />
+      - RenderTransform:=<TranslateTransform X="158" />
   - target: StartMenu.FolderModal > Grid > Border
     styles:
       - Width=350
@@ -337,15 +346,10 @@ controlStyles:
       - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
       - CornerRadius=5
       - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
-  - target: GridView#AllAppsGrid > Border > ScrollViewer > Border#Root > Grid > ScrollContentPresenter > ItemsPresenter > ItemsWrapGrid > GridViewItem > Border#ContentBorder@CommonStates > Grid > Border
-    styles:
-      - CornerRadius=0
-  - target: GridView#AllAppsGrid > Border > ScrollViewer > Border#Root > Grid > ScrollContentPresenter > ItemsPresenter > ItemsWrapGrid > GridViewItem > Border#ContentBorder@CommonStates > Grid > Border#HighContrastBorder
-    styles:
-      - CornerRadius=0
+ 
   - target: Grid#MainMenu > Grid#MainContent > Grid
     styles:
       - Canvas.ZIndex=1
   - target: Microsoft.UI.Xaml.Controls.PipsPager
     styles:
-      - RenderTransform:=<TranslateTransform X="-45" />
+      - RenderTransform:=<TranslateTransform X="-55" Y="-15"/>
