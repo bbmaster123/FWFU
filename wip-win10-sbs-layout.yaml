@@ -1,47 +1,86 @@
+disableNewStartMenuLayout: newLayoutSideBySide
 controlStyles:
   - target: Grid
     styles:
       - RequestedTheme=2
   - target: Grid#FrameRoot
     styles:
-      - Height=750
+      - Height=780
       - Margin=-16,0,0,-14
+  - target: Grid#MainMenu
+    styles:
+      - Width=708
   - target: Windows.UI.Xaml.Controls.Border#AcrylicBorder
     styles:
       - BorderThickness=0
       - CornerRadius=0,8,0,0
-  - target: StartDocked.AppListViewItem > Grid > Border#BackgroundBorder
+  - target: Border#ContentBorder@CommonStates > Grid > Border#HighContrastBorder
     styles:
-      - CornerRadius=0
-      - BorderThickness=0,1,1,0
-      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-  - target: Windows.UI.Xaml.Controls.Border#Border@CommonStates
-    styles:
-      - CornerRadius=0
-      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
-  - target: Grid#ContentBorder@CommonStates
-    styles:
-      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@Pressed:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.64"/>
+      - BorderBrush@Pressed:=<RevealBorderBrush Color="#22FFFFFF" TargetTheme="1" Opacity="1"/>
       - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+      - CornerRadius=0
+  - target: StartMenu.SearchBoxToggleButton
+    styles:
+      - Visibility=Collapsed
+  - target: Windows.UI.Xaml.Controls.Primitives.ToggleButton#ShowHideCompanion
+    styles:
+      - Visibility=Visible
+      - Margin=-642,24,641-24
+  - target: Border#AcrylicOverlay
+    styles:
+      - Margin=0,-66,1,-63
+      - CornerRadius=0,8,0,0
+  - target: Windows.UI.Xaml.Controls.Frame
+    styles:
+      - Margin=0,-64,0,-63
+  - target: Windows.UI.Xaml.Controls.TextBlock#UserTileNameText
+    styles:
+      - Visibility=Collapsed
+  - target: Windows.UI.Xaml.Controls.TextBlock#PinnedListHeaderText
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#TopLevelSuggestionsListHeader
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#TopLevelHeader > Grid > TextBlock
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#TopLevelHeader > Grid[2]
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#TopLevelSuggestionsRoot
+    styles:
+      - Visibility=Collapsed
+  - target: TextBlock#ZoomedOutHeading
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer
+    styles:
+      - RenderTransform:=<TranslateTransform X="-450" />
+      - Margin=-92,-73,-152,-55
+  - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer#SideBySidePinnedScrollViewer
+    styles:
+      - Height=674
+      - RenderTransform:=<TranslateTransform X="275" Y="-30" />
   - target: StartDocked.NavigationPaneView
     styles:
       - Transform3D:=<CompositeTransform3D RotationZ="270" />
       - Width=740
       - VerticalAlignment=0
-      - Margin=-11,-549,0,0
+      - Margin=-11,-556,0,0
   - target: StartDocked.AppListView#NavigationPanePlacesListView
     styles:
       - HorizontalAlignment=2
-      - Margin=0,0,200,0
+      - Margin=0,0,130,0
   - target: StartDocked.UserTileView
     styles:
       - HorizontalAlignment=2
       - Margin=0,-2,35,0
       - Transform3D:=<CompositeTransform3D TranslateX="50" />
       - Height=42
-  - target: Windows.UI.Xaml.Controls.TextBlock#UserTileNameText
-    styles:
-      - Visibility=Collapsed
   - target: StartDocked.NavigationPaneButton > Grid@CommonStates > Windows.UI.Xaml.Controls.ContentPresenter > Grid > Grid#UserTileIcon
     styles:
       - Margin=-3,0,-3,-62
@@ -55,25 +94,60 @@ controlStyles:
   - target: StartDocked.PowerOptionsView
     styles:
       - Transform3D:=<CompositeTransform3D TranslateY="-600" TranslateX="465" RotationZ="90" />
-      - Margin=-669,640,670,-640
-  - target: Windows.UI.Xaml.Controls.TextBlock#PinnedListHeaderText
+      - Margin=-598,640,599,-640
+  - target: Windows.UI.Xaml.Controls.Primitives.ScrollBar
     styles:
-      - Visibility=Collapsed
+      - Height=725
+      - Margin=-15,12,15,0
+  - target: StartMenu.PinnedList
+    styles:
+      - MaxWidth=396
+  - target: Windows.UI.Xaml.Controls.GridView > Border > ScrollViewer
+    styles:
+      - ScrollViewer.VerticalScrollMode=2
+  - target: Microsoft.UI.Xaml.Controls.DropDownButton > Grid > Windows.UI.Xaml.Controls.ContentPresenter > TextBlock
+    styles:
+      - Text=
+      - FontFamily=Segoe Fluent Icons
+      - FontSize=16
+      - Margin=-8
+  - target: Microsoft.UI.Xaml.Controls.DropDownButton
+    styles:
+      - Style:=<StaticResource ResourceKey="ButtonRevealStyle"/>
+      - Margin=-375,36,375,-36
+      - Width=24
+      - Padding=0,4,0,4
+      - Height=24
+  - target: StartMenu.StartHome
+    styles:
+      - Margin=-0,1,0,0
+  - target: StartDocked.AppListViewItem > Grid > Border#BackgroundBorder
+    styles:
+      - CornerRadius=0
+      - BorderThickness=0,1,1,0
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+  - target: Windows.UI.Xaml.Controls.Border#Border@CommonStates
+    styles:
+      - CornerRadius=0
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
+  - target: Grid#ContentBorder@CommonStates
+    styles:
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+  - target: Windows.UI.Xaml.Controls.GridViewItem > Border > Grid > Border#BackgroundBorder
+    styles:
+      - CornerRadius=0
+  - target: StartMenu.PinnedList
+    styles:
+      - Height=655
   - target: Windows.UI.Xaml.Controls.GridView#PinnedList > Border > Windows.UI.Xaml.Controls.ScrollViewer > Border > Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem > Border#ContentBorder@CommonStates > Grid#DroppedFlickerWorkaroundWrapper > Border
     styles:
       - CornerRadius=4
-      - Background:=<SolidColorBrush Color="#24B4B4B4" />
       - Margin=2
-      - Background:=<SolidColorBrush Color="{ThemeResource SystemBaseMediumColor}" Opacity="0.2"/>
-  - target: StartMenu.PinnedList#StartMenuPinnedList
+  - target: Windows.UI.Xaml.Controls.GridView#PinnedList > Border > Windows.UI.Xaml.Controls.ScrollViewer > Border > Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem > Border#ContentBorder@CommonStates > Grid#DroppedFlickerWorkaroundWrapper > Border[1]
     styles:
-      - MaxWidth=700
-      - RenderTransform:=<TranslateTransform X="345" Y="880" />
-      - Height=674
-  - target: Windows.UI.Xaml.Controls.Primitives.ScrollBar
-    styles:
-      - Margin=0,-15,17,15
-      - Height=700
+      - Background:=<SolidColorBrush Color="#24B4B4B4" />
+      - Background:=<SolidColorBrush Color="{ThemeResource SystemBaseMediumColor}" Opacity="0.14"/>
   - target: MenuFlyoutSeparator
     styles:
       - Margin=0,-2,0,-2
@@ -88,12 +162,9 @@ controlStyles:
     styles:
       - CornerRadius=8
       - Padding=-3,0,-1,0
-  - target: Grid#TopLevelSuggestionsListHeader
-    styles:
-      - Visibility=Collapsed
   - target: StartMenu.FolderModal
     styles:
-      - RenderTransform:=<TranslateTransform X="150" />
+      - RenderTransform:=<TranslateTransform X="170" />
   - target: StartMenu.FolderModal > Grid > Border
     styles:
       - Width=350
@@ -134,13 +205,6 @@ controlStyles:
       - BorderBrush@PointerOver:=<RevealBorderBrush Color="#22FFFFFF" TargetTheme="1" Opacity="1"/>
       - CornerRadius=0
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>
-  - target: Border#ContentBorder@CommonStates > Grid > Border#HighContrastBorder
-    styles:
-      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
-      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-      - Background@Pressed:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.64"/>
-      - BorderBrush@Pressed:=<RevealBorderBrush Color="#22FFFFFF" TargetTheme="1" Opacity="1"/>
-      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
   - target: Cortana.UI.Views.TaskbarSearchPage > Grid > Grid
     styles:
       - Width=880
@@ -171,56 +235,9 @@ controlStyles:
   - target: Windows.UI.Xaml.Controls.ContentDialog > Border > Grid > Border
     styles:
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-  - target: Grid#MainContent
-    styles:
-      - Margin=0,-63,1,-63
-  - target: Grid#TopLevelHeader > Grid[2]
-    styles:
-      - Visibility=Collapsed
-  - target: Windows.UI.Xaml.Controls.GridView#AllAppsGrid
-    styles:
-      - Margin=10,0,-10,0
-  - target: Grid#MainMenu
-    styles:
-      - Width=720
   - target: Border#StartDropShadow
     styles:
       - Margin=0,0,2,0
-  - target: Windows.UI.Xaml.Controls.ItemsWrapGrid
-    styles:
-      - MaxWidth=333
-  - target: StartMenu.StartHome
-    styles:
-      - Margin=-280,1,0,0
-  - target: StartMenu.SearchBoxToggleButton
-    styles:
-      - Visibility=Collapsed
-  - target: Windows.UI.Xaml.Controls.Primitives.ToggleButton
-    styles:
-      - Visibility=Visible
-      - Margin=-653,92,653-92
-  - target: Microsoft.UI.Xaml.Controls.DropDownButton > Grid > Windows.UI.Xaml.Controls.ContentPresenter > TextBlock
-    styles:
-      - Text=
-      - FontFamily=Segoe Fluent Icons
-      - FontSize=16
-      - Margin=-8
-  - target: Grid#TopLevelHeader > Grid > Grid
-    styles:
-      - Visibility=Collapsed
-  - target: Windows.UI.Xaml.Controls.GridView > Border > ScrollViewer
-    styles:
-      - ScrollViewer.VerticalScrollMode=2
-  - target: Microsoft.UI.Xaml.Controls.DropDownButton
-    styles:
-      - Style:=<StaticResource ResourceKey="ButtonRevealStyle"/>
-      - Margin=-695,172,695,-172
-      - Width=24
-      - Padding=0,4,0,4
-      - Height=24
-  - target: Grid#TopLevelHeader
-    styles:
-      - Margin=0,-900,0,0
   - target: Grid#RootGrid > Cortana.UI.Views.RichSearchBoxControl
     styles:
       - MaxWidth=710
@@ -235,10 +252,10 @@ controlStyles:
       - CornerRadius=0,6,0,0
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
       - BorderThickness=2
-      - Margin=-1,0,0,-1
+      - Margin=-1,-63,0,-63
   - target: Windows.UI.Xaml.Controls.ListView#ZoomedOutListView
     styles:
-      - Margin=142,0,-142,0
+      - Margin=-32,0,32,0
   - target: StartMenu.CategoryControl > Grid > Border
     styles:
       - Width=132
@@ -262,18 +279,6 @@ controlStyles:
     styles:
       - Margin=-12,-8,-12,-16
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-  - target: Button#SeeAllButton
-    styles:
-      - MaxWidth=132
-      - Margin=0,-4,0,4
-  - target: Button#SeeAllButton > Grid@CommonStates
-    styles:
-      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent TargetTheme="1" Opacity="1"/>
-      - CornerRadius=5
-      - BorderThickness=1
-      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
-      - BorderBrush:=<RevealBorderBrush Color="Transparent TargetTheme="1" Opacity="0"/>
   - target: StartMenu.StartMenuCompanion#RightCompanion > Grid > Grid
     styles:
       - Margin=0
