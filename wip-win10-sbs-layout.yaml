@@ -205,15 +205,20 @@ controlStyles:
       - BorderBrush@PointerOver:=<RevealBorderBrush Color="#22FFFFFF" TargetTheme="1" Opacity="1"/>
       - CornerRadius=0
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>
+
+
+
+
+      
   - target: Cortana.UI.Views.TaskbarSearchPage > Grid > Grid
     styles:
-      - Width=880
+      - Width=708
       - Height=886
       - Margin=-60,-10,0,-28
   - target: Border#AppBorder
     styles:
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-      - Width=750
+      - Width=708
       - BorderThickness=2
   - target: Grid#QueryFormulationRoot
     styles:
@@ -226,12 +231,12 @@ controlStyles:
       - BorderThickness=1
   - target: FlyoutPresenter
     styles:
-      - Margin=10,20,140,0
+      - RenderTransform:=<TranslateTransform X="-64" Y="92" />
   - target: FlyoutPresenter > Border
     styles:
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>
       - BorderThickness=1
-      - CornerRadius=8
+      - CornerRadius=8      
   - target: Windows.UI.Xaml.Controls.ContentDialog > Border > Grid > Border
     styles:
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
