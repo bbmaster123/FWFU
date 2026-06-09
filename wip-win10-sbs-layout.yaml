@@ -93,8 +93,9 @@ controlStyles:
       - Margin=0,40,0,-40
   - target: StartDocked.PowerOptionsView
     styles:
-      - Transform3D:=<CompositeTransform3D TranslateY="-600" TranslateX="465" RotationZ="90" />
-      - Margin=-598,640,599,-640
+      - Transform3D:=<CompositeTransform3D TranslateY="-560" TranslateX="517" RotationZ="90" />
+      - Margin=-650,600,650,-600
+      - Canvas.ZIndex=99
   - target: Windows.UI.Xaml.Controls.Primitives.ScrollBar
     styles:
       - Height=725
