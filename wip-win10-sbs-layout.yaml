@@ -197,6 +197,42 @@ controlStyles:
       - Margin=0,-2,0,-2
       - Padding=4
 
+
+  #Grid View
+  - target: Grid#PageRoot@ViewStates > SemanticZoom#TopLevelRoot > Grid > ScrollViewer#ScrollViewer > ScrollContentPresenter#ScrollContentPresenter > Grid > ContentPresenter#ZoomedInPresenter > GridView#AllAppsGrid > Border > Grid#SideBySidePinnedWrapper > ScrollViewer#ScrollViewer > Border#Root > Grid > ScrollContentPresenter#ScrollContentPresenter > ItemsPresenter
+    styles:      
+      - Margin@Alpha_GridView=28,0,0,0
+
+  #Category View    
+  - target: StartMenu.CategoryControl > Grid > Border
+    styles:
+      - Width=132
+      - Height=132
+      - CornerRadius=8
+  - target: Button#LogoContainer > Grid@CommonStates > Border
+    styles:
+      - Width=58
+      - Height=58
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+  - target: Button#FolderPlate > Grid@CommonStates > Border
+    styles:
+      - Width=58
+      - Height=58
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+  - target: StartMenu.CategoryControl
+    styles:
+      - Margin=-12,-8,-12,-16
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/> 
+
+  #Zoomed Out List (Alphabet Menu)
+  - target: Windows.UI.Xaml.Controls.ListView#ZoomedOutListView
+    styles:
+      - Margin=-32,0,32,0           
+
   #User Account Flyout
   - target: FlyoutPresenter
     styles:
@@ -263,36 +299,6 @@ controlStyles:
       - Width=708
       - Height=886
       - Margin=-60,-10,0,-28
-
-  #Zoomed Out List (Alphabet Menu)
-  - target: Windows.UI.Xaml.Controls.ListView#ZoomedOutListView
-    styles:
-      - Margin=-32,0,32,0
-
-  #Category View    
-  - target: StartMenu.CategoryControl > Grid > Border
-    styles:
-      - Width=132
-      - Height=132
-      - CornerRadius=8
-  - target: Button#LogoContainer > Grid@CommonStates > Border
-    styles:
-      - Width=58
-      - Height=58
-      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
-  - target: Button#FolderPlate > Grid@CommonStates > Border
-    styles:
-      - Width=58
-      - Height=58
-      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
-      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
-  - target: StartMenu.CategoryControl
-    styles:
-      - Margin=-12,-8,-12,-16
-      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
 
   #Phone Panel Flyout    
   - target: StartMenu.StartMenuCompanion#RightCompanion > Grid > Grid
