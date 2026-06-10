@@ -227,6 +227,16 @@ controlStyles:
     styles:
       - Margin=-12,-8,-12,-16
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/> 
+  - target: Button#SeeAllButton
+    styles:
+      - MaxWidth=132
+      - Margin=0,-6,0,6      
+  - target: Button#SeeAllButton > Grid@CommonStates
+    styles:
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.4"/>
+      - CornerRadius=5
+      - BorderThickness=1    
 
   #Zoomed Out List (Alphabet Menu)
   - target: Windows.UI.Xaml.Controls.ListView#ZoomedOutListView
@@ -387,4 +397,10 @@ controlStyles:
     styles:
       - RenderTransform@SearchBoxOnTop:=<TranslateTransform X="-30" />       
       - RenderTransform@SearchBoxOnBottomWithoutQFMargin:=<TranslateTransform X="0" /> 
+      - Margin@SearchBoxOnBottomWithoutQFMargin=3,3,0,4
+      - Width@SearchBoxOnBottomWithoutQFMargin=216
+  - target: Border#TaskbarMargin
+    styles:
+       - Height=29
+     
       
