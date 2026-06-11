@@ -1,8 +1,7 @@
 disableNewStartMenuLayout: newLayoutSideBySide
-
-
 controlStyles:
-  - target: Grid
+    #Force Dark Mode everywhere
+  - target: //Grid 
     styles:
       - RequestedTheme=2
 #Frame      
