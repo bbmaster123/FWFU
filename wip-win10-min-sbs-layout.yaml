@@ -1,0 +1,384 @@
+disableNewStartMenuLayout: newLayoutSideBySide
+controlStyles:
+    #Force Dark Mode everywhere
+  - target: //Grid 
+    styles:
+      - RequestedTheme=2
+#Frame      
+  - target: Grid#FrameRoot
+    styles:
+      - Height=720
+      - Margin=0,0,0,-4
+      - Padding=0
+
+  - target: Grid#MainMenu
+    styles:
+       - MaxWidth=389
+  - target: Border#AcrylicOverlay
+    styles:     
+      - CornerRadius=0,6,0,0
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - BorderThickness=2
+      - Margin=1,-64,1,-64
+  - target: Windows.UI.Xaml.Controls.Frame
+    styles:
+      - Margin=0,-64,0,-64    
+  - target: Windows.UI.Xaml.Controls.Border#AcrylicBorder
+    styles:
+      - BorderThickness=0
+      - CornerRadius=0,8,0,0
+  - target: Border#ContentBorder@CommonStates > Grid > Border#HighContrastBorder
+    styles:
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@Pressed:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.64"/>
+      - BorderBrush@Pressed:=<RevealBorderBrush Color="#22FFFFFF" TargetTheme="1" Opacity="1"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+      - CornerRadius=0
+
+#Collapsed Elements      
+  - target: Windows.UI.Xaml.Controls.TextBlock#UserTileNameText
+    styles:
+      - Visibility=Collapsed
+  - target: StartMenu.PinnedList#StartMenuPinnedList
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#TopLevelSuggestionsContainer
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#TopLevelHeader > Grid[2]
+    styles:
+      - Visibility=Collapsed
+  - target: StartMenu.SearchBoxToggleButton
+    styles:
+      - Visibility=Collapsed
+  - target: Microsoft.UI.Xaml.Controls.AnimatedIcon#ChevronIcon
+    styles:
+      - Visibility=Collapsed
+  - target: Border#TaskbarMargin
+    styles:
+      - Visibility=Collapsed
+  - target: TextBlock#PinnedListHeaderText
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#TopLevelSuggestionsRoot
+    styles:
+      - Visibility=Collapsed
+  - target: TextBlock[Text=All]
+    styles:
+      - Visibility=Collapsed
+  - target: Grid#ShowMorePinnedGrid
+    styles:
+      - Visibility=Collapsed
+
+#Phone Flyout Toggle Button
+  - target: Windows.UI.Xaml.Controls.Primitives.ToggleButton#ShowHideCompanion
+    styles:
+      - Visibility=Visible
+      - Margin=-332,39,331-39
+  - target: Button
+    styles:
+      - Style:=<ResourceKey="ButtonRevealStyle" />    
+
+#Apps list
+  - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer
+    styles:
+      - RenderTransform:=<TranslateTransform X="-340" />
+      - Margin=-200,-42,-200,-15  
+  - target: Windows.UI.Xaml.Controls.Border#Border@CommonStates
+    styles:
+      - CornerRadius=0
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
+  - target: Windows.UI.Xaml.Controls.GridViewItem > Border > Grid > Border#BackgroundBorder
+    styles:
+      - CornerRadius=0
+  - target: Windows.UI.Xaml.Controls.GridView#PinnedList > Border > Windows.UI.Xaml.Controls.ScrollViewer > Border > Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem > Border#ContentBorder@CommonStates > Grid#DroppedFlickerWorkaroundWrapper > Border
+    styles:
+      - CornerRadius=4
+      - Margin=2
+  - target: TextBlock#Text
+    styles:
+      - FontSize=16
+      - HorizontalAlignment=3
+      - VerticalAlignment=2
+      - Height=64
+      - Padding=5,40,0,0
+  - target: Button#Header > Border#Border@CommonStates
+    styles:
+      - BorderThickness=1
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
+      - Background@Pressed:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.5"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>            
+  
+#Grouped Apps Modal     
+  - target: Windows.UI.Xaml.Controls.GridView#LevelOneGridView
+    styles:
+      - Width=295
+      - RenderTransform:=<TranslateTransform Y="-10" />
+  - target: Microsoft.UI.Xaml.Controls.PipsPager
+    styles:
+      - RenderTransform:=<TranslateTransform X="-55" Y="-15"/>
+  - target: StartMenu.FolderModal
+    styles:
+      - RenderTransform:=<TranslateTransform X="-16" />
+  - target: StartMenu.FolderModal > Grid > Border
+    styles:
+      - Width=315
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - BorderThickness=1        
+
+#NavPane (shortcut buttons)    
+  - target: StartDocked.NavigationPaneView
+    styles:
+      - Transform3D:=<CompositeTransform3D RotationZ="270" />
+      - Width=740
+      - VerticalAlignment=0
+      - Margin=-11,-556,0,0
+  - target: StartDocked.AppListView#NavigationPanePlacesListView
+    styles:
+      - HorizontalAlignment=2
+      - Margin=0,0,130,0
+  - target: StartDocked.AppListViewItem > Grid > Border#BackgroundBorder
+    styles:
+      - CornerRadius=0
+      - BorderThickness=0,1,1,0
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+  - target: Grid#ContentBorder@CommonStates
+    styles:
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>            
+
+#User Tile    
+  - target: StartDocked.UserTileView
+    styles:
+      - HorizontalAlignment=2
+      - Margin=0,-2,36,0
+      - Transform3D:=<CompositeTransform3D TranslateX="50" />
+      - Height=42
+  - target: StartDocked.NavigationPaneButton > Grid@CommonStates > Windows.UI.Xaml.Controls.ContentPresenter > Grid > Grid#UserTileIcon
+    styles:
+      - Margin=-3,0,-3,-62
+      - Transform3D:=<CompositeTransform3D RotationZ="90" />
+      - Width=30
+      - Height=30
+  - target: StartDocked.AppListViewItem > Grid > ContentPresenter
+    styles:
+      - Transform3D:=<CompositeTransform3D RotationZ="90" />
+      - Margin=0,40,0,-40
+  - target: StartDocked.NavigationPaneButton#UserTileButton > Grid@CommonStates > Border
+    styles:
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - CornerRadius=5,0,0,0
+      - Margin=1,1,1.5,1.5
+      - BorderThickness=1,2,1,0
+      - Background@Pressed:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/> 
+ 
+#Power Button    
+  - target: StartDocked.PowerOptionsView
+    styles:
+      - Transform3D:=<CompositeTransform3D TranslateY="-560" TranslateX="517" RotationZ="90" />
+      - Margin=-350,600,350,-600
+      - Canvas.ZIndex=99
+  - target: StartDocked.NavigationPaneButton#PowerButton > Grid@CommonStates
+    styles:
+      - BorderThickness=0,0,1,1
+      - Margin=0.5,2.5,0.5,0
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="#22FFFFFF" TargetTheme="1" Opacity="1"/>
+      - CornerRadius=0
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>      
+
+#Scrollbar    
+  - target: Windows.UI.Xaml.Controls.Primitives.ScrollBar
+    styles:
+      - MaxHeight=686
+      - Canvas.ZIndex=99
+      - RenderTransform:=<TranslateTransform X="-20" Y="12" />
+  - target: ScrollViewer > ScrollContentPresenter > Border > StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu > Grid#MainContent > Frame#StartFrame > ContentPresenter > StartMenu.StartHome > Grid#PageRoot > SemanticZoom#TopLevelRoot > Grid > ScrollViewer#ScrollViewer > ScrollContentPresenter#ScrollContentPresenter > Grid > ContentPresenter#ZoomedInPresenter > GridView#AllAppsGrid > Border > Grid#SideBySidePinnedWrapper > ScrollViewer#SideBySidePinnedScrollViewer
+    styles:
+      - MaxWidth=396
+
+#View Mode Dropdown    
+  - target: Microsoft.UI.Xaml.Controls.DropDownButton > Grid > Windows.UI.Xaml.Controls.ContentPresenter > TextBlock
+    styles:
+      - Text=
+      - FontFamily=Segoe Fluent Icons
+      - FontSize=16
+      - Margin=-8
+  - target: Microsoft.UI.Xaml.Controls.DropDownButton
+    styles:
+      - Style:=<StaticResource ResourceKey="ButtonRevealStyle"/>
+      - Margin=-375,41,375,-41
+      - Width=24
+      - Padding=0,4,0,4
+      - Height=24
+
+#Grid View
+  - target: Grid#PageRoot@ViewStates > SemanticZoom#TopLevelRoot > Grid > ScrollViewer#ScrollViewer > ScrollContentPresenter#ScrollContentPresenter > Grid > ContentPresenter#ZoomedInPresenter > GridView#AllAppsGrid > Border > Grid#SideBySidePinnedWrapper > ScrollViewer#ScrollViewer > Border#Root > Grid > ScrollContentPresenter#ScrollContentPresenter > ItemsPresenter
+    styles:      
+      - Margin@Alpha_GridView=28,0,0,0
+
+#Category View    
+  - target: StartMenu.CategoryControl > Grid > Border
+    styles:
+      - Width=132
+      - Height=132
+      - CornerRadius=8
+  - target: Button#LogoContainer > Grid@CommonStates > Border
+    styles:
+      - Width=58
+      - Height=58
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+  - target: Button#FolderPlate > Grid@CommonStates > Border
+    styles:
+      - Width=58
+      - Height=58
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+  - target: StartMenu.CategoryControl
+    styles:
+      - Margin=-12,-8,-12,-16
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/> 
+  - target: Button#SeeAllButton
+    styles:
+      - MaxWidth=132
+      - Margin=0,-6,0,6      
+  - target: Button#SeeAllButton > Grid@CommonStates
+    styles:
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.4"/>
+      - CornerRadius=5
+      - BorderThickness=1    
+
+#User Account Flyout
+  - target: FlyoutPresenter
+    styles:
+      - RenderTransform:=<TranslateTransform X="-64" Y="92" />    
+  - target: FlyoutPresenter > Border
+    styles:
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>
+      - BorderThickness=1
+      - CornerRadius=8    
+
+#Context Menu (Right Click)    
+  - target: MenuFlyoutItem
+    styles:
+      - Margin=2,0,0,2
+  - target: MenuFlyoutPresenter
+    styles:
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+  - target: MenuFlyoutPresenter > Border > ScrollViewer
+    styles:
+      - CornerRadius=8
+      - Padding=-3,0,-1,0
+  - target: MenuFlyoutSeparator
+    styles:
+      - Margin=0,-2,0,-2
+      - Padding=4
+  
+#Uninstall Dialog(s)
+  - target: Border#UninstallFlyoutPresenterBorder
+    styles:
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>
+  - target: Windows.UI.Xaml.Controls.ContentDialog
+    styles:
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>
+  - target: Windows.UI.Xaml.Controls.ContentDialog > Border > Grid > Border
+    styles:
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>     
+
+#Phone Panel Flyout    
+  - target: StartMenu.StartMenuCompanion#RightCompanion > Grid > Grid
+    styles:      
+      - Margin=0
+      - CornerRadius=0,8,0,0
+  - target: Grid#CompanionRoot > Grid#MainContent > Border#AcrylicOverlay
+    styles:
+      - Margin=1,1,1,-62
+      - BorderThickness=12,2,2,1
+  - target: StartMenu.StartMenuCompanion
+    styles:
+      - Canvas.ZIndex=0
+      - Margin=-10,0,0,0
+  - target: Grid#RightCompanionContainerGrid
+    styles:
+      - Margin=-8,0,0,0
+      - Canvas.ZIndex=1
+  - target: AdaptiveCards.Rendering.Uwp.WholeItemsPanel > Grid > Border
+    styles:
+      - Margin=25,0,0,0
+  - target: Border#Root > Grid > ScrollContentPresenter > AdaptiveCards.Rendering.Uwp.WholeItemsPanel > Border > AdaptiveCards.Rendering.Uwp.WholeItemsPanel > Grid > Border > AdaptiveCards.Rendering.Uwp.WholeItemsPanel > TextBlock
+    styles:
+      - Margin=36,0,0,0
+      - Text=Recent
+      - TextAlignment=0
+      - Text=Recent Phone Activity
+  - target: Windows.UI.Xaml.Controls.TextBlock[Text=View your recent calls, messages, photos, and more.]
+    styles:
+      - TextAlignment=0
+  - target: Border > AdaptiveCards.Rendering.Uwp.WholeItemsPanel > Border > AdaptiveCards.Rendering.Uwp.WholeItemsPanel > Border
+    styles:
+      - Margin=40,0,0,0
+  - target: AdaptiveCards.Rendering.Uwp.WholeItemsPanel > Grid > Windows.UI.Xaml.Controls.Image
+    styles:
+      - MaxWidth=52
+      - MaxHeight=92
+  - target: Button#Header > Border > TextBlock
+    styles:
+      - Margin=-4,0,4,0
+  - target: ItemsWrapGrid > ListViewItem > Grid@CommonStates
+    styles:
+      - BorderThickness=1
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="#34FFFFFF" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - CornerRadius=5
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+  - target: ListViewItem > Grid#ContentBorder@CommonStates
+    styles:
+      - BorderThickness=1
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="#34FFFFFF" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - CornerRadius=5
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+  #Flyout Button Force Clickable
+  - target: Grid#MainMenu > Grid#MainContent > Grid
+    styles:
+      - Canvas.ZIndex=1
+
+#Search Menu 
+  - target: Cortana.UI.Views.TaskbarSearchPage > Grid
+    styles:
+      - Height=720
+      - RenderTransform:=<TranslateTransform Y="110" />  
+  - target: Cortana.UI.Views.TaskbarSearchPage > Grid > Grid
+    styles:
+      - Width=708
+      - Height=886
+      - Margin=-60,-10,0,-28
+  - target: Border#AppBorder
+    styles:
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>     
+      - BorderThickness=2
+  - target: Grid#QueryFormulationRoot
+    styles:
+      - Padding=-14,8,-14,0
+      - Width=708
+  - target: Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid@SearchBoxLocationStates > Border#TaskbarSearchBackground
+    styles:
+      - BorderBrush=#88FFFFFF
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - BorderThickness=1
+      - MaxWidth=692
+      - RenderTransform:=<TranslateTransform X="-30" />
+      - RenderTransform@SearchBoxOnTop:=<TranslateTransform X="-30" />
+      - RenderTransform@SearchBoxOnBottomWithoutQFMargin:=<TranslateTransform X="0" Y="-1"/>
+      - Margin@SearchBoxOnBottomWithoutQFMargin=Auto    
+
+#Search Box on Taskbar        
+  - target: Border#TaskbarMargin
+    styles:
+      - Height=29 
