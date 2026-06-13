@@ -1,0 +1,168 @@
+disableNewStartMenuLayout: newLayoutSideBySide
+controlStyles:
+  #Force Dark Mode
+  - target: //Grid
+    styles:
+      - RequestedTheme=2
+#Frame
+  - target: Windows.UI.Xaml.Controls.Frame
+    styles:
+      - Margin=0,-65,0,0 
+  - target: Grid#FrameRoot
+    styles:
+      - MaxHeight=680      
+  - target: Grid#MainMenu
+    styles:
+      - MaxWidth=650
+  - target: Grid#MainMenu > Grid#MainContent > Grid
+    styles:
+      - Canvas.ZIndex=1      
+  - target: Border#AcrylicOverlay
+    styles:
+      - Margin=0,-70,0,0
+
+#Collapsed Elements
+  - target: Windows.UI.Xaml.Controls.Button#CloseAllAppsButton
+    styles:
+      - Visibility=Collapsed    
+  - target: Windows.UI.Xaml.Controls.Grid#ShowMoreSuggestions
+    styles:
+      - Visibility=Collapsed
+    #see all button
+  - target: Grid#TopLevelHeader > Grid[2] 
+    styles:
+      - Visibility=Collapsed 
+  - target: TextBlock#AllListHeadingText
+    styles:
+      - Visibility=Collapsed 
+  - target: StartMenu.SearchBoxToggleButton
+    styles:
+      - Visibility=Collapsed
+  - target: TextBlock#PinnedListHeaderText
+    styles:      
+      - Visibility=Collapsed
+  - target: TextBlock#ZoomedOutHeading
+    styles:
+      - Visibility=Collapsed
+
+#User Tile
+  - target: StartDocked.UserTileView
+    styles:
+    - Margin=-30,0,30,0
+
+#NavPane
+  - target: StartDocked.AppListView#NavigationPanePlacesListView
+    styles:
+      - FlowDirection=1
+      - Margin=30,0,-30,0
+            
+#Power Button
+  - target: StartDocked.NavigationPaneButton#PowerButton
+    styles:
+      - Margin=30,0,-30,0
+
+#Apps list/Pinned List
+  - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer
+    styles:
+      - RenderTransform:=<TranslateTransform X="-480" />
+      - Margin=-92,-25,-172,-15
+  - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer#SideBySidePinnedScrollViewer
+    styles:
+      - RenderTransform:=<TranslateTransform X="178" Y="-52" />
+      - Canvas.ZIndex=-1
+  - target: Button#Header > Border#Border@CommonStates
+    styles:
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.3"/>
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.3"/>
+      - BorderThickness=1
+  - target: Windows.UI.Xaml.Controls.Border#ContentBorder > Windows.UI.Xaml.Controls.Grid#DroppedFlickerWorkaroundWrapper > Border#HighContrastBorder
+    styles:
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.3"/>
+      - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.7"/>
+      - BorderThickness=1
+
+#Pinned List
+  - target: GridView#PinnedList
+    styles:
+      - Width=300       
+  - target: GridView#PinnedList > Border > Windows.UI.Xaml.Controls.ScrollViewer
+    styles:
+      - Height=250    
+  - target: Windows.UI.Xaml.Controls.GridView#PinnedList > Border > Windows.UI.Xaml.Controls.ScrollViewer > Border > Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem > Border#ContentBorder@CommonStates > Grid#DroppedFlickerWorkaroundWrapper > Border[1]
+    styles:
+      - Background:=<RevealBorderBrush Color="#646464" TargetTheme="1" Opacity=".1"/>
+      - Margin=2
+      - BorderThickness=0 
+
+#Recommended List
+  - target: Grid#TopLevelSuggestionsRoot
+    styles:
+      - MinHeight=129
+      - Margin=-65,16,-65,0
+      - Width=400 
+  - target: Windows.UI.Xaml.Controls.GridView#RecommendedList > Windows.UI.Xaml.Controls.Border > Windows.UI.Xaml.Controls.ScrollViewer#ScrollViewer > Windows.UI.Xaml.Controls.Border#Root > Windows.UI.Xaml.Controls.Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter#ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem
+    styles:
+      - MaxWidth=145
+      - MinWidth=145
+      - Margin=0
+  - target: Windows.UI.Xaml.Controls.Grid#SuggestionsParentContainer
+    styles:
+      - Height=168     
+  - target: Windows.UI.Xaml.Controls.TextBlock#NoSuggestionsWithoutSettingsLink
+    styles:
+      - Margin=11,0,48,0
+  - target: Windows.UI.Xaml.Controls.GridView#RecommendedList > Border > Windows.UI.Xaml.Controls.ScrollViewer > Border > Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem > Border > Grid > Border
+    styles:
+      - Background:=<RevealBorderBrush Color="#646464" TargetTheme="1" Opacity=".1"/>
+      - Margin=2
+
+#Pinned/Recommended List Scroll Mode (allows scrolling, otherwise fixed height)    
+  - target: ScrollViewer
+    styles:
+      - ScrollViewer.VerticalScrollMode=2
+
+#Scrollbar    
+  - target: Windows.UI.Xaml.Controls.Primitives.ScrollBar
+    styles:
+      - MaxHeight=575
+      - Canvas.ZIndex=99
+      - RenderTransform:=<TranslateTransform X="-20" Y="3" />    
+
+#View Mode Dropdown
+  - target: Microsoft.UI.Xaml.Controls.DropDownButton
+    styles:
+      - Background:=<RevealBorderBrush Color="#646464" TargetTheme="1" Opacity=".1"/>
+      - Style:=<StaticResource ResourceKey="ButtonRevealStyle"/>
+      - Margin=-249,1,249,0 
+      - Padding=4,2,4,2      
+
+#Zoomed Out View (Alphabet) 
+  - target: ItemsWrapGrid > ListViewItem > Grid@CommonStates
+    styles:
+      - BorderThickness=1
+      - BorderBrush@PointerOver:=<RevealBorderBrush Color="#34FFFFFF" TargetTheme="1" Opacity="1"/>
+      - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
+      - CornerRadius=5
+      - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
+
+#Grouped Folder Modal
+  - target: StartMenu.ExpandedFolderList > Grid > Grid
+    styles:
+      - Margin=0,0,80,0
+  - target: StartMenu.ExpandedFolderList > Grid > Border
+    styles:
+      - Width=350
+      - Margin=0,0,92,0
+  - target: StartMenu.ExpandedFolderList > Grid > Grid > Microsoft.UI.Xaml.Controls.PipsPager#PinnedListPipsPager
+    styles:
+      - Margin=-20,0,20,0
+
+#Category View    
+  - target: StartMenu.CategoryControl > Grid > Border
+    styles:
+      - Height=132
+      - Width=132
+  - target: StartMenu.CategoryControl
+    styles:
+      - Margin=-22,-16,-22,0
+      - Width=165
