@@ -24,10 +24,6 @@ controlStyles:
   - target: Windows.UI.Xaml.Controls.Grid#ShowMoreSuggestions
     styles:
       - Visibility=Collapsed
-    #see all button
-  - target: Grid#TopLevelHeader > Grid[2] 
-    styles:
-      - Visibility=Collapsed 
   - target: TextBlock#AllListHeadingText
     styles:
       - Visibility=Collapsed 
