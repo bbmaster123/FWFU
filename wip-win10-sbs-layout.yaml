@@ -47,10 +47,7 @@ controlStyles:
   - target: Grid#TopLevelSuggestionsListHeader
     styles:
       - Visibility=Collapsed
-  - target: Grid#TopLevelHeader > Grid > TextBlock
-    styles:
-      - Visibility=Collapsed
-  - target: Grid#TopLevelHeader > Grid[2]
+  - target: Grid#TopLevelHeader > Grid > TextBlock#AllListHeadingText
     styles:
       - Visibility=Collapsed
   - target: Grid#TopLevelSuggestionsRoot
