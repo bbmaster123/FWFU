@@ -218,3 +218,8 @@ controlStyles:
       - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.4"/>
       - CornerRadius=5
       - BorderThickness=1    
+
+#User Account Flyout
+  - target: FlyoutPresenter
+    styles:
+      - RenderTransform:=<TranslateTransform X="20" Y="-24" />    
