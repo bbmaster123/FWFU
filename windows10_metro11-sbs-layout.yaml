@@ -67,8 +67,7 @@ controlStyles:
     styles:
       - Background@PointerOver:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="1"/>
       - Background:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0"/>
-      - CornerRadius=5  
-        
+      - CornerRadius=5          
             
 #Power Button
   - target: StartDocked.NavigationPaneButton#PowerButton
