@@ -47,6 +47,7 @@ controlStyles:
   - target: Grid#TopLevelSuggestionsListHeader
     styles:
       - Visibility=Collapsed
+      #Show more button
   - target: Grid#TopLevelHeader > Grid[2]
     styles:
       - Visibility=Collapsed      
