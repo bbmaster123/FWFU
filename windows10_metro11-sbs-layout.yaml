@@ -1,9 +1,5 @@
 disableNewStartMenuLayout: newLayoutSideBySide
 controlStyles:
-  #Force Dark Mode
-  - target: //Grid
-    styles:
-      - RequestedTheme=2
 #Frame
   - target: Windows.UI.Xaml.Controls.Frame
     styles:
