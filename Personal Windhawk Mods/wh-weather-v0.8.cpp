@@ -317,7 +317,7 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
         } else {
             weatherGrid.HorizontalAlignment(HorizontalAlignment::Right);
             weatherGrid.VerticalAlignment(VerticalAlignment::Center);
-            weatherGrid.Margin(Thickness{0, 0, 100, 0});
+            weatherGrid.Margin(Thickness{0, 0, 10, 0});
         }
     } catch (...) {
     }
@@ -383,14 +383,14 @@ winrt::Windows::UI::Xaml::Controls::Flyout CreateForecastFlyout(
     // Set Margin on the FlyoutPresenter to 0 to prevent double margin spacing
     winrt::Windows::UI::Xaml::Setter marginSetter(
         winrt::Windows::UI::Xaml::FrameworkElement::MarginProperty(),
-        winrt::box_value(Thickness{0, 0, 0, 0}));
+        winrt::box_value(Thickness{0, 0, 0, 5}));
 
     winrt::Windows::UI::Xaml::Setter padSetter(
         winrt::Windows::UI::Xaml::Controls::Control::PaddingProperty(),
-        winrt::box_value(Thickness{0, 0, 0, 0}));
+        winrt::box_value(Thickness{0, 0, 0, 5}));
     winrt::Windows::UI::Xaml::Setter borSetter(
         winrt::Windows::UI::Xaml::Controls::Control::BorderThicknessProperty(),
-        winrt::box_value(Thickness{0, 0, 0, 0}));
+        winrt::box_value(Thickness{0, 0, 0, 5}));
     // Override MaxWidth to allow wider flyout panels
     winrt::Windows::UI::Xaml::Setter maxWidthSetter(
         winrt::Windows::UI::Xaml::FrameworkElement::MaxWidthProperty(),
@@ -1869,7 +1869,7 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                             }
                             
                             if (g_debugLogs) {
-                                Wh_Log(L"[EP_WeatherHost] WinRT Geolocator success: %s (Lat=%f, Lon=%f)", 
+                                Wh_Log(L"[EP_WeatherHost] WinRT Geolocator success", 
                                        g_displayCity.c_str(), g_cachedLatitude, g_cachedLongitude);
                             }
                             preciseSuccess = true;
