@@ -3,7 +3,7 @@ controlStyles:
 #Frame
   - target: Windows.UI.Xaml.Controls.Frame
     styles:
-      - Margin=0,-65,0,0 
+      - Margin=0,-64,0,0 
   - target: Grid#FrameRoot
     styles:
       - MaxHeight=692      
@@ -34,12 +34,12 @@ controlStyles:
   - target: StartMenu.SearchBoxToggleButton
     styles:
       - Visibility=Collapsed
-  - target: TextBlock#PinnedListHeaderText
-    styles:      
-      - Visibility=Collapsed
-  - target: TextBlock#ZoomedOutHeading
+  - target: //TextBlock#ZoomedOutHeading
     styles:
       - Visibility=Collapsed
+  - target: Grid#ShowMorePinnedGrid > Button
+    styles:
+      - Visibility=Collapsed 
 
 #User Tile
   - target: StartDocked.UserTileView
@@ -81,14 +81,23 @@ controlStyles:
       - CornerRadius=5
       - BorderBrush:=<RevealBorderBrush Color="Transparent" TargetTheme="1" Opacity="0.8"/>        
 
+#Phone Flyout Toggle Button
+  - target: Windows.UI.Xaml.Controls.Primitives.ToggleButton#ShowHideCompanion
+    styles:
+      - Visibility=Visible
+      - Margin=12,-8,-12,0
+  - target: Button
+    styles:
+      - Style:=<ResourceKey="ButtonRevealStyle" />    
+
 #Apps list/Pinned List
   - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer
     styles:
       - RenderTransform:=<TranslateTransform X="-480" />
-      - Margin=-92,-25,-172,-15
+      - Margin=-92,0,-172,-15
   - target: Grid#SideBySidePinnedWrapper > Windows.UI.Xaml.Controls.ScrollViewer#SideBySidePinnedScrollViewer
     styles:
-      - RenderTransform:=<TranslateTransform X="178" Y="-52" />
+      - RenderTransform:=<TranslateTransform X="172"  />
       - Canvas.ZIndex=-1
   - target: Button#Header > Border#Border@CommonStates
     styles:
@@ -104,7 +113,8 @@ controlStyles:
 #Pinned List
   - target: GridView#PinnedList
     styles:
-      - Width=300       
+      - Width=300
+      - RenderTransform:=<TranslateTransform Y="-272"  />       
   - target: GridView#PinnedList > Border > Windows.UI.Xaml.Controls.ScrollViewer
     styles:
       - Height=265   
@@ -113,13 +123,18 @@ controlStyles:
       - Background:=<RevealBorderBrush Color="#646464" TargetTheme="1" Opacity=".1"/>
       - Margin=2
       - CornerRadius=5
+  - target: TextBlock#PinnedListHeaderText
+    styles:  
+      - Margin=260,-4,-260,0    
 
 #Recommended List
   - target: Grid#TopLevelSuggestionsRoot
     styles:
       - MinHeight=132
       - Margin=-65,31,-65,-31
-      - Width=400 
+      - Width=400
+      - RenderTransform:=<TranslateTransform Y="-550"/>
+         
   - target: Windows.UI.Xaml.Controls.GridView#RecommendedList > Windows.UI.Xaml.Controls.Border > Windows.UI.Xaml.Controls.ScrollViewer#ScrollViewer > Windows.UI.Xaml.Controls.Border#Root > Windows.UI.Xaml.Controls.Grid > Windows.UI.Xaml.Controls.ScrollContentPresenter#ScrollContentPresenter > Windows.UI.Xaml.Controls.ItemsPresenter > Windows.UI.Xaml.Controls.ItemsWrapGrid > Windows.UI.Xaml.Controls.GridViewItem
     styles:
       - MaxWidth=145
@@ -132,9 +147,16 @@ controlStyles:
     styles:
       - Background:=<RevealBorderBrush Color="#646464" TargetTheme="1" Opacity=".1"/>
       - Margin=2
+      
 
-#Pinned/Recommended List Scroll Mode (allows scrolling, otherwise fixed height)    
+#Pinned/Recommended List Scroll Mode (allows scrolling, otherwise fixed height)  
   - target: ScrollViewer
+    styles:
+      - ScrollViewer.VerticalScrollMode=0 
+  - target: GridView#AllAppsGrid > Border > Grid#SideBySidePinnedWrapper > ScrollViewer#ScrollViewer   
+    styles:   
+     -  ScrollViewer.VerticalScrollMode=2 
+  - target: Windows.UI.Xaml.Controls.GridView > Border > ScrollViewer
     styles:
       - ScrollViewer.VerticalScrollMode=2
 
@@ -143,14 +165,14 @@ controlStyles:
     styles:
       - MaxHeight=575
       - Canvas.ZIndex=99
-      - RenderTransform:=<TranslateTransform X="-20" Y="3" />    
+      - RenderTransform:=<TranslateTransform X="-20" Y="-5" />    
 
 #View Mode Dropdown
   - target: Microsoft.UI.Xaml.Controls.DropDownButton
     styles:
       - Background:=<RevealBorderBrush Color="#646464" TargetTheme="1" Opacity=".1"/>
       - Style:=<StaticResource ResourceKey="ButtonRevealStyle"/>
-      - Margin=-120,-8,120,8 
+      - Margin=-120,-7,120,7
       - Padding=4,2,4,2
 
 #Zoomed Out View (Alphabet) 
