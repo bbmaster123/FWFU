@@ -2,7 +2,7 @@
 // @id              wh-weather
 // @name            Windhawk Weather
 // @description     A lightweight XAML taskbar weather widget that injects directly into the Windows Taskbar UI Tree.
-// @version         1.0.0
+// @version         1.0.5
 // @author          Gemini
 // @include         explorer.exe
 // @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion
@@ -46,17 +46,12 @@
 - line2Bold: false
   $name: Line 2 Bold Toggle
   $description: Enable bold for line 2 text
-- density: 0
-  $name: Layout Density Scale
-  $description: Spacing & padding tightness (0 = Normal, 1 = Compact, 2 = Very Compact)
 - useAcrylic: true
   $name: Enable Acrylic Effect in Forecast Panel
 - acrylicOpacity: 50
   $name: Acrylic Opacity (0-100)
 - forecastDaysFetch: 14
   $name: Forecast API query length (Days, max 16)
-- debugLogs: false
-  $name: Write Detailed Debug Logs to Windhawk
 - injectToSysTray: false
   $name: Inject to System Tray (Windows 11)
   $description: Check to inject next to the clock/system tray instead of replacing the Widgets button
@@ -120,7 +115,7 @@ int g_textOffset = 10;
 COLORREF g_textColor = RGB(255, 255, 255);
 int g_fontSize = 13;
 int g_iconFontSize = 16;
-bool g_debugLogs = true;
+bool g_debugLogs = false;
 bool g_injectToSysTray = false;
 
 std::wstring g_line1FontFamily = L"Segoe UI";
@@ -129,7 +124,7 @@ bool g_line1Bold = true;
 std::wstring g_line2FontFamily = L"Segoe UI";
 int g_line2FontSize = 11;
 bool g_line2Bold = false;
-int g_density = 0;
+int g_density = 2;
 
 // Weather state Cached values
 std::wstring g_cachedTemp = L"--°F";
@@ -509,12 +504,12 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     StackPanel mainStack;
     mainStack.Orientation(Orientation::Vertical);
 
-    // Scale padding and spacing by layout density setting
-    double sidePad = (g_density == 2) ? 8.0 : ((g_density == 1) ? 12.0 : 16.0);
-    double vertPad = (g_density == 2) ? 6.0 : ((g_density == 1) ? 10.0 : 16.0);
+    // Optimized static padding and spacing for extreme compactness
+    double sidePad = 8.0;
+    double vertPad = 4.0;
     mainStack.Padding(Thickness{sidePad, vertPad, sidePad, vertPad});
 
-    double mSpacing = (g_density == 2) ? 4.0 : ((g_density == 1) ? 6.0 : 8.0);
+    double mSpacing = 3.0;
     mainStack.Spacing(mSpacing);
 
     if (animate) {
@@ -653,9 +648,9 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     } else {
         TextBlock bigIcon;
         bigIcon.Text(currentIcon);
-        bigIcon.FontSize(42);        
-        bigIcon.Margin(Thickness{-2, -12, 0, 0});
-        bigIcon.VerticalAlignment(VerticalAlignment::Top);
+        bigIcon.FontSize(48);        
+        bigIcon.Margin(Thickness{-2, -14, 0, 0});
+        bigIcon.VerticalAlignment(VerticalAlignment::Center);
         topWeatherRow.Children().Append(bigIcon);
     }
 
@@ -1084,6 +1079,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
             Grid dayCard;
             dayCard.CornerRadius(CornerRadius{8, 8, 8, 8});
             dayCard.Padding(Thickness{4, 8, 4, 8});
+            dayCard.Margin(Thickness{0, 4, 0, 4});
             dayCard.Width(70.0); /* Force exact width for predictable layouts */
             dayCard.Background(SolidColorBrush{
                 isSel ? cardBgColor
@@ -2943,11 +2939,7 @@ void ShowWin10ForecastPopup(HWND hClock) {
         else if (g_forecastDaysFetch >= 10)
             panelWidth = 444.0;
 
-        double panelHeight = 380.0;
-        if (g_density == 1)
-            panelHeight = 330.0;
-        else if (g_density == 2)
-            panelHeight = 280.0;
+        double panelHeight = 260.0;
 
         double dpiScale = GetDpiScaleForWindow(hClock);
         int physicalWidth = (int)(panelWidth * dpiScale);
@@ -3326,13 +3318,9 @@ void LoadModConfiguration() {
 
     g_line2Bold = Wh_GetIntSetting(L"line2Bold") != 0;
 
-    g_density = Wh_GetIntSetting(L"density");
-    if (g_density < 0)
-        g_density = 0;
-    if (g_density > 2)
-        g_density = 2;
+    g_density = 2; // Keep most compact option
+    g_debugLogs = false; // Disable unneeded logging
 
-    g_debugLogs = Wh_GetIntSetting(L"debugLogs") != 0;
     g_injectToSysTray = Wh_GetIntSetting(L"injectToSysTray") != 0;
     g_useAcrylic = Wh_GetIntSetting(L"useAcrylic") != 0;
     g_acrylicOpacity = Wh_GetIntSetting(L"acrylicOpacity");
