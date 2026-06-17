@@ -2,7 +2,7 @@
 // @id              wh-weather
 // @name            Windhawk Weather
 // @description     A lightweight XAML taskbar weather widget that injects directly into the Windows Taskbar UI Tree.
-// @version         1.0.5
+// @version         1.1.0
 // @author          Gemini
 // @include         explorer.exe
 // @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion
@@ -64,6 +64,7 @@
 #include <windhawk_utils.h>
 #include <windows.h>
 #include <dwmapi.h>
+#include <uxtheme.h>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -137,6 +138,7 @@ bool g_weatherAcquired = false;
 
 // Background Thread values
 HANDLE g_hQueryThread = NULL;
+HANDLE g_hWatchdogThread = NULL;
 DWORD g_dwThreadId = 0;
 bool g_bThreadShouldTerm = false;
 HANDLE g_hForceUpdateEvent = NULL;
@@ -154,6 +156,7 @@ struct DailyForecast {
 
 struct HourlyForecast {
     std::wstring timeString;
+    int hour24;
     std::wstring icon;
     std::wstring conditionName;
     std::wstring temp;
@@ -172,7 +175,13 @@ std::wstring g_cachedWindSpeed = L"--";
 std::wstring g_cachedPrecipProb = L"0%";
 std::wstring g_cachedHumidity = L"0%";
 CRITICAL_SECTION g_forecastLock;
+CRITICAL_SECTION g_subclassLock;
 bool g_forecastAcquired = false;
+
+extern HWND g_hSubclassedWnd;
+void AlignOverlayWindow();
+void RestoreDefaultWindowSize(HWND hwndToClean);
+int GetRequiredWeatherWidth(HWND hWnd);
 
 std::pair<std::wstring, std::wstring> GetCodeMapping(int code);
 
@@ -317,7 +326,7 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
         } else {
             weatherGrid.HorizontalAlignment(HorizontalAlignment::Right);
             weatherGrid.VerticalAlignment(VerticalAlignment::Center);
-            weatherGrid.Margin(Thickness{0, 0, 10, 0});
+            weatherGrid.Margin(Thickness{0, 0, 100, 0});
         }
     } catch (...) {
     }
@@ -325,6 +334,9 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
 
 // State for interactive flyout
 std::wstring g_selectedDate = L"";
+std::wstring g_selectedHour = L"";
+double g_graphScrollOffset = -1.0;
+
 int g_selectedGraphTab = 0;  // 0=Temp, 1=Precip, 2=Wind
 
 bool IsSystemDarkMode() {
@@ -363,7 +375,9 @@ winrt::Windows::UI::Xaml::Controls::Flyout CreateForecastFlyout(
 
     // Clear selection state on new open
     g_selectedDate = L"";
+    g_selectedHour = L"";
     g_selectedGraphTab = 0;
+    g_graphScrollOffset = -1.0;
 
     PopulateForecastUI(rootGrid, condition, currentIcon, currentTemp);
 
@@ -383,14 +397,14 @@ winrt::Windows::UI::Xaml::Controls::Flyout CreateForecastFlyout(
     // Set Margin on the FlyoutPresenter to 0 to prevent double margin spacing
     winrt::Windows::UI::Xaml::Setter marginSetter(
         winrt::Windows::UI::Xaml::FrameworkElement::MarginProperty(),
-        winrt::box_value(Thickness{0, 0, 0, 5}));
+        winrt::box_value(Thickness{0, 0, 0, 0}));
 
     winrt::Windows::UI::Xaml::Setter padSetter(
         winrt::Windows::UI::Xaml::Controls::Control::PaddingProperty(),
-        winrt::box_value(Thickness{0, 0, 0, 5}));
+        winrt::box_value(Thickness{0, 0, 0, 0}));
     winrt::Windows::UI::Xaml::Setter borSetter(
         winrt::Windows::UI::Xaml::Controls::Control::BorderThicknessProperty(),
-        winrt::box_value(Thickness{0, 0, 0, 5}));
+        winrt::box_value(Thickness{0, 0, 0, 0}));
     // Override MaxWidth to allow wider flyout panels
     winrt::Windows::UI::Xaml::Setter maxWidthSetter(
         winrt::Windows::UI::Xaml::FrameworkElement::MaxWidthProperty(),
@@ -449,7 +463,29 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         return;
 
     if (g_selectedDate.empty() && !localDaily.empty()) {
-        g_selectedDate = localDaily[0].rawDate;
+        SYSTEMTIME st; GetLocalTime(&st);
+        wchar_t dateBuf[32]; swprintf(dateBuf, L"%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+        std::wstring sysDate(dateBuf);
+        
+        bool foundToday = false;
+        for (const auto& d : localDaily) {
+            if (d.rawDate == sysDate) {
+                foundToday = true;
+                break;
+            }
+        }
+        g_selectedDate = foundToday ? sysDate : localDaily[0].rawDate;
+        
+        // Default hour
+        if (g_selectedHour.empty()) {
+            int sysHour = st.wHour;
+            for (const auto& h : localHourly) {
+                if (h.rawDate == g_selectedDate && h.hour24 == sysHour) {
+                    g_selectedHour = h.timeString;
+                    break;
+                }
+            }
+        }
     }
 
     bool isDark = IsSystemDarkMode();
@@ -500,6 +536,14 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     } catch (...) {
         rootGrid.Background(SolidColorBrush{bgColor});
     }
+
+    winrt::Windows::UI::Color borderColor;
+    borderColor.A = 40;
+    borderColor.R = 128;
+    borderColor.G = 128;
+    borderColor.B = 128;
+    rootGrid.BorderBrush(SolidColorBrush{borderColor});
+    rootGrid.BorderThickness(Thickness{1, 1, 1, 1});
 
     StackPanel mainStack;
     mainStack.Orientation(Orientation::Vertical);
@@ -563,14 +607,11 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     std::wstring repWind = customWind;
 
     if (repPrecip.empty() || repHumidity.empty() || repWind.empty()) {
-        std::wstring targetHourStr = L"";
-        if (!localHourly.empty()) {
-            targetHourStr = localHourly[0].timeString;
-        }
+        std::wstring targetHourStr = g_selectedHour;
 
         bool foundRep = false;
         for (const auto& h : localHourly) {
-            if (h.rawDate == g_selectedDate && (targetHourStr.empty() || h.timeString == targetHourStr)) {
+            if (h.rawDate == g_selectedDate && h.timeString == targetHourStr) {
                 if (repPrecip.empty()) repPrecip = h.precipProb;
                 if (repHumidity.empty()) repHumidity = h.humidity;
                 if (repWind.empty()) repWind = h.windSpeed;
@@ -594,6 +635,16 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     std::wstring dispPrecip = repPrecip.empty() ? localPrecipProb : repPrecip;
     std::wstring dispHumidity = repHumidity.empty() ? localHumidity : repHumidity;
     std::wstring dispWind = repWind.empty() ? localWindSpeed : repWind;
+
+    // Weather status text in the upper right, above Precipitation
+    TextBlock condText;
+    condText.Text(condition);
+    condText.FontSize(13);
+    condText.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
+    condText.Foreground(SolidColorBrush{primaryColor});
+    condText.HorizontalAlignment(HorizontalAlignment::Right);
+    condText.Margin(Thickness{0, 0, 0, 4}); 
+    rightCurrent.Children().Append(condText);
 
     rightCurrent.Children().Append(
         MakeSmallText(L"Precipitation: " + dispPrecip));
@@ -626,7 +677,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     StackPanel leftCurrent;
     leftCurrent.Orientation(Orientation::Vertical);
     leftCurrent.Spacing(1);
-    leftCurrent.Margin(Thickness{4, -28, 0, -10}); // move up nicely below location text, and preserve elegant negative space
+    leftCurrent.Margin(Thickness{4, -46, 0, -12}); // Move up significantly more to tighten the vertical space
 
     // A row for the Icon and the Temperature side-by-side
     StackPanel topWeatherRow;
@@ -637,47 +688,43 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     if (g_weatherStyle == 1) {
         FontIcon bigIcon;
         bigIcon.FontFamily(
-            winrt::Windows::UI::Xaml::Media::FontFamily(L"Segoe MDL2 Assets"));
+            winrt::Windows::UI::Xaml::Media::FontFamily(L"Segoe UI Symbol"));
         bigIcon.Glyph(currentIcon);
-        bigIcon.FontSize(48);
+        bigIcon.FontSize(42);
         bigIcon.Foreground(
             SolidColorBrush{winrt::Windows::UI::ColorHelper::FromArgb(
                 255, 250, 214, 53)});  // Google-like yellow sun
         bigIcon.VerticalAlignment(VerticalAlignment::Center);
+        bigIcon.Margin(Thickness{0, -4, 0, 0});
         topWeatherRow.Children().Append(bigIcon);
     } else {
         TextBlock bigIcon;
         bigIcon.Text(currentIcon);
         bigIcon.FontSize(48);        
-        bigIcon.Margin(Thickness{-2, -14, 0, 0});
+        bigIcon.Margin(Thickness{-2, -18, 0, 0});
         bigIcon.VerticalAlignment(VerticalAlignment::Center);
         topWeatherRow.Children().Append(bigIcon);
     }
 
     TextBlock bigTemp;
-    bigTemp.Text(currentTemp);
+    std::wstring displayTemp = currentTemp;
+    if (!displayTemp.empty() && displayTemp.back() == L'°') {
+        displayTemp += (g_useCelsius ? L"C" : L"F");
+    }
+    bigTemp.Text(displayTemp);
     bigTemp.FontSize(32);
     bigTemp.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
     bigTemp.Foreground(SolidColorBrush{primaryColor});
     bigTemp.VerticalAlignment(VerticalAlignment::Center);
-    bigTemp.Margin(Thickness{0, -10, 0, 0}); // move temperature text up a few pixels
+    bigTemp.Margin(Thickness{0, -14, 0, 0}); // move temperature text up a few pixels
     topWeatherRow.Children().Append(bigTemp);
 
     leftCurrent.Children().Append(topWeatherRow);
-
-    // Weather status text below the icon and temp row, aligned left
-    TextBlock condText;
-    condText.Text(condition);
-    condText.FontSize(15);
-    condText.Foreground(SolidColorBrush{secondaryColor});
-    condText.Margin(Thickness{6, -6, 0, 6}); // slight indent to align beautifully with the weather icon edge
-    leftCurrent.Children().Append(condText);
 
     try {
         bigTemp.Transitions(winrt::Windows::UI::Xaml::Media::Animation::TransitionCollection{});
         topWeatherRow.Transitions(winrt::Windows::UI::Xaml::Media::Animation::TransitionCollection{});
         leftCurrent.Transitions(winrt::Windows::UI::Xaml::Media::Animation::TransitionCollection{});
-        condText.Transitions(winrt::Windows::UI::Xaml::Media::Animation::TransitionCollection{});
     } catch (...) {}
 
     mainStack.Children().Append(leftCurrent);
@@ -803,7 +850,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         }
         double range = maxVal - minVal;
 
-        const double graphHeight = 75.0;
+        const double graphHeight = 60.0;
         const double graphOuterWidth = std::max(280.0, rootGrid.Width() - 32.0);
 
             double paddingTB =
@@ -811,7 +858,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
 
         // We make columns 55.0px wide, and display ALL points seamlessly!
         double colWidth = 55.0;
-        double canvasWidth = std::max(graphOuterWidth, colWidth * (double)std::max((size_t)0, currentDayHourly.size() - 1));
+        double canvasWidth = std::max(graphOuterWidth, colWidth * (double)std::max((size_t)0, currentDayHourly.size() - 1) + 40.0);
 
         Grid graphContainer;
         graphContainer.Background(SolidColorBrush{cardBgColor});
@@ -833,12 +880,12 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         }
 
         Canvas canvas;
-        canvas.Height(graphHeight + 58.0);
+        canvas.Height(graphHeight + 34.0);
         canvas.Width(canvasWidth);
 
         // Draw 3 horizontal dashed guidelines to provide separating visual context
-        double gridYLines[] = {30.0, graphHeight / 2.0 + 30.0,
-                               graphHeight + 30.0};
+        double gridYLines[] = {18.0, graphHeight / 2.0 + 18.0,
+                               graphHeight + 18.0};
         for (double ly : gridYLines) {
             winrt::Windows::UI::Xaml::Shapes::Line gl;
             gl.X1(0.0);
@@ -872,8 +919,8 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
 
         winrt::Windows::UI::Xaml::Media::PointCollection points;
 
-        const double graphPaddingLeft = 12.0;
-        const double graphPaddingRight = 12.0;
+        const double graphPaddingLeft = 28.0;
+        const double graphPaddingRight = 28.0;
         double activeWidth = canvasWidth - graphPaddingLeft - graphPaddingRight;
         double xStep = (currentDayHourly.size() <= 1) ? 0.0 : activeWidth / (double)(currentDayHourly.size() - 1);
 
@@ -896,7 +943,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
             double y = graphHeight - (normY * graphHeight);
 
             points.Append(
-                winrt::Windows::Foundation::Point{(float)x, (float)y + 20.0f});
+                winrt::Windows::Foundation::Point{(float)x, (float)y + 18.0f});
 
             // Value Label
             TextBlock valTb;
@@ -927,8 +974,8 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
             }
             Canvas::SetLeft(valTb, valTbLeft);
             // Move temperature numbers up to sit gracefully above the line
-            double valYOffset = (g_selectedGraphTab == 2) ? 28.0 : 18.0;
-            Canvas::SetTop(valTb, y + 20.0 - valYOffset);
+            double valYOffset = (g_selectedGraphTab == 2) ? 24.0 : 14.0;
+            Canvas::SetTop(valTb, y + 18.0 - valYOffset);
             canvas.Children().Append(valTb);
             valTbs.push_back(valTb);
 
@@ -947,7 +994,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
                 timeTbLeft = canvasWidth - 40.0;
             }
             Canvas::SetLeft(timeTb, timeTbLeft);
-            Canvas::SetTop(timeTb, graphHeight + 38.0);
+            Canvas::SetTop(timeTb, graphHeight + 20.0);
             canvas.Children().Append(timeTb);
             timeTbs.push_back(timeTb);
         }
@@ -963,8 +1010,8 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         if (points.Size() > 0) {
             auto lastPt = points.GetAt(points.Size() - 1);
             auto firstPt = points.GetAt(0);
-            polygonPoints.Append(winrt::Windows::Foundation::Point{lastPt.X, (float)graphHeight + 30.0f});
-            polygonPoints.Append(winrt::Windows::Foundation::Point{firstPt.X, (float)graphHeight + 30.0f});
+            polygonPoints.Append(winrt::Windows::Foundation::Point{lastPt.X, (float)graphHeight + 18.0f});
+            polygonPoints.Append(winrt::Windows::Foundation::Point{firstPt.X, (float)graphHeight + 18.0f});
         }
         shadedArea.Points(polygonPoints);
 
@@ -993,15 +1040,29 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         // Add the poly line on top of the shaded region
         canvas.Children().Append(poly);
 
+        double selectedXOffset = 0.0;
         // Add interactive overlay columns on top of graph
         for (size_t i = 0; i < currentDayHourly.size(); i++) {
             auto h = currentDayHourly[i];
             double x = graphPaddingLeft + i * xStep;
 
-            Grid hoverCol;
-            hoverCol.Width(std::max(30.0, xStep));
-            hoverCol.Height(graphHeight + 58.0);
-            hoverCol.Background(SolidColorBrush{winrt::Windows::UI::Colors::Transparent()});
+            bool isSelectedHour = (h.timeString == g_selectedHour);
+            if (isSelectedHour) {
+                selectedXOffset = x - (graphOuterWidth / 2.0);
+            }
+
+            Border hoverCol;
+            hoverCol.Width(std::max(20.0, xStep - 6.0));
+            hoverCol.Height(graphHeight + 34.0);
+            
+            if (isSelectedHour) {
+                hoverCol.Background(SolidColorBrush{winrt::Windows::UI::ColorHelper::FromArgb(30, activeTabColor.R, activeTabColor.G, activeTabColor.B)});
+                hoverCol.BorderBrush(SolidColorBrush{winrt::Windows::UI::ColorHelper::FromArgb(80, activeTabColor.R, activeTabColor.G, activeTabColor.B)});
+                hoverCol.BorderThickness(Thickness{1, 1, 1, 1});
+            } else {
+                hoverCol.Background(SolidColorBrush{winrt::Windows::UI::Colors::Transparent()});
+                hoverCol.BorderThickness(Thickness{0, 0, 0, 0});
+            }
             hoverCol.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{4.0, 4.0, 4.0, 4.0});
             Canvas::SetLeft(hoverCol, x - (hoverCol.Width() / 2.0));
             Canvas::SetTop(hoverCol, 0);
@@ -1009,16 +1070,41 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
             TextBlock valTb = valTbs[i];
             TextBlock timeTb = timeTbs[i];
 
+            if (isSelectedHour) {
+                valTb.Foreground(SolidColorBrush{primaryColor});
+                timeTb.Foreground(SolidColorBrush{primaryColor});
+                valTb.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
+                timeTb.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
+            }
+
             hoverCol.PointerEntered([=](auto const&, auto const&) mutable {
                 valTb.Foreground(SolidColorBrush{activeTabColor});
                 timeTb.Foreground(SolidColorBrush{activeTabColor});
+                if (!isSelectedHour) {
+                    hoverCol.Background(SolidColorBrush{winrt::Windows::UI::ColorHelper::FromArgb(20, activeTabColor.R, activeTabColor.G, activeTabColor.B)});
+                    hoverCol.BorderBrush(SolidColorBrush{winrt::Windows::UI::ColorHelper::FromArgb(40, activeTabColor.R, activeTabColor.G, activeTabColor.B)});
+                    hoverCol.BorderThickness(Thickness{1, 1, 1, 1});
+                }
             });
             hoverCol.PointerExited([=](auto const&, auto const&) mutable {
-                valTb.Foreground(SolidColorBrush{secondaryColor});
-                timeTb.Foreground(SolidColorBrush{tertiaryColor});
+                if (isSelectedHour) {
+                    valTb.Foreground(SolidColorBrush{primaryColor});
+                    timeTb.Foreground(SolidColorBrush{primaryColor});
+                    valTb.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
+                    timeTb.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
+                    hoverCol.Background(SolidColorBrush{winrt::Windows::UI::ColorHelper::FromArgb(30, activeTabColor.R, activeTabColor.G, activeTabColor.B)});
+                    hoverCol.BorderBrush(SolidColorBrush{winrt::Windows::UI::ColorHelper::FromArgb(80, activeTabColor.R, activeTabColor.G, activeTabColor.B)});
+                    hoverCol.BorderThickness(Thickness{1, 1, 1, 1});
+                } else {
+                    valTb.Foreground(SolidColorBrush{secondaryColor});
+                    timeTb.Foreground(SolidColorBrush{tertiaryColor});
+                    hoverCol.Background(SolidColorBrush{winrt::Windows::UI::Colors::Transparent()});
+                    hoverCol.BorderThickness(Thickness{0, 0, 0, 0});
+                }
             });
 
             hoverCol.Tapped([=](auto const&, auto const&) mutable {
+                g_selectedHour = h.timeString;
                 PopulateForecastUI(rootGrid, h.conditionName, h.icon, h.temp, false, false, h.precipProb, h.humidity, h.windSpeed);
             });
 
@@ -1035,6 +1121,22 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         graphContainer.Children().Append(graphScroll);
         graphSection.Children().Append(graphContainer);
         mainStack.Children().Append(graphSection);
+
+        double targetScrollOffset = (g_graphScrollOffset < 0.0) ? selectedXOffset : g_graphScrollOffset;
+
+        if (targetScrollOffset > 0.0) {
+            graphScroll.ChangeView(targetScrollOffset, nullptr, nullptr, true);
+            graphScroll.Loaded([=](auto const&, auto const&) {
+                graphScroll.ChangeView(targetScrollOffset, nullptr, nullptr, true);
+            });
+        }
+        
+        graphScroll.ViewChanged([=](auto const& sender, auto const&) {
+            auto sv = sender.template try_as<ScrollViewer>();
+            if (sv) {
+                g_graphScrollOffset = sv.HorizontalOffset();
+            }
+        });
     }
 
     winrt::Windows::UI::Xaml::Shapes::Rectangle div2;
@@ -1079,7 +1181,6 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
             Grid dayCard;
             dayCard.CornerRadius(CornerRadius{8, 8, 8, 8});
             dayCard.Padding(Thickness{4, 8, 4, 8});
-            dayCard.Margin(Thickness{0, 4, 0, 4});
             dayCard.Width(70.0); /* Force exact width for predictable layouts */
             dayCard.Background(SolidColorBrush{
                 isSel ? cardBgColor
@@ -1100,7 +1201,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
             if (g_weatherStyle == 1) {
                 FontIcon hd;
                 hd.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(
-                    L"Segoe MDL2 Assets"));
+                    L"Segoe UI Symbol"));
                 hd.Glyph(d.icon);
                 hd.FontSize(25);
                 hd.Foreground(
@@ -1167,6 +1268,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
             dayCard.Tapped([=](auto const&, auto const&) mutable {
                 if (g_selectedDate != dDate) {
                     g_selectedDate = dDate;
+                    g_graphScrollOffset = -1.0;
                     PopulateForecastUI(rootGrid, dCond, dIcon,
                                        dTemp, false, false,
                                        dPrecip, dHumidity, dWind);
@@ -1220,7 +1322,7 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
 
         // Scale padding by density setting
         double padLeftRight =
-            (g_density == 2) ? 2.0 : ((g_density == 1) ? 4.0 : 6.0);
+            (g_density == 2) ? 8.0 : ((g_density == 1) ? 10.0 : 12.0);
         double padTopBottom =
             (g_density == 2) ? 1.0 : ((g_density == 1) ? 1.5 : 2.0);
         buttonElement.Padding(
@@ -1246,7 +1348,7 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         double spacingVal =
             (g_density == 2) ? 3.0 : ((g_density == 1) ? 4.5 : 6.0);
         stackPanel.Spacing(spacingVal);
-        stackPanel.VerticalAlignment(VerticalAlignment::Center);
+        stackPanel.VerticalAlignment(VerticalAlignment::Stretch);
         stackPanel.HorizontalAlignment(HorizontalAlignment::Left);
 
         winrt::Windows::UI::Color xamlColor;
@@ -1256,14 +1358,15 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         xamlColor.B = GetBValue(g_textColor);
         SolidColorBrush foregroundBrush{xamlColor};
 
-        if (g_weatherStyle == 1) {  // Segoe MDL2 Assets
+        if (g_weatherStyle == 1) {  // Segoe PUA or Segoe MDL2 Assets
             FontIcon iconBlock;
             iconBlock.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(
-                L"Segoe MDL2 Assets"));
+                L"Segoe UI Symbol"));
             iconBlock.Glyph(icon);
             iconBlock.FontSize((double)g_iconFontSize);
             iconBlock.Foreground(foregroundBrush);
             iconBlock.VerticalAlignment(VerticalAlignment::Center);
+            iconBlock.Margin(winrt::Windows::UI::Xaml::Thickness{-6.0, 0, 0, 0});
             stackPanel.Children().Append(iconBlock);
         } else {  // Emojis
             TextBlock iconBlock;
@@ -1336,8 +1439,8 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                     if (contentWidth <= 0.0) {
                         contentWidth = 120.0;
                     }
-                    showOptions.Position(winrt::Windows::Foundation::Point{(float)(contentWidth / 2.0), -10.0f});
-                    flyout.ShowAt(stackPanel, showOptions);
+                    showOptions.Position(winrt::Windows::Foundation::Point{(float)(contentWidth / 2.0), -24.0f});
+                    flyout.ShowAt(buttonElement, showOptions);
                 } catch (...) {
                     flyout.ShowAt(buttonElement);
                 }
@@ -1607,30 +1710,30 @@ std::pair<std::wstring, std::wstring> GetCodeMapping(int code) {
             icon = L"⛅";
             cond = L"Cloudy";
         }
-    } else {  // Segoe MDL2 icon style
+    } else { // Segoe MDL2 icon style
         if (code == 0) {
-            icon = L"\uE706";  // Sunny (E706)
+            icon = L"\u2600";  // Sunny
             cond = L"Clear";
         } else if (code >= 1 && code <= 3) {
-            icon = code == 3 ? L"\uE708" : L"\uE7C9";  // Cloudy (E708) vs Partly Cloudy (E7C9)
+            icon = code == 3 ? L"\u2601" : L"\u26C5";  // Cloudy vs Partly Cloudy
             cond = code == 3 ? L"Cloudy" : L"Partly Cloudy";
         } else if (code == 45 || code == 48) {
-            icon = L"\uE7C8";  // Fog (E7C8)
+            icon = L"\u2601";  // Fog
             cond = L"Foggy";
         } else if (code >= 51 && code <= 65) {
-            icon = L"\uE709";  // Rain (E709)
+            icon = L"\u2614";  // Rain Umbrella
             cond = L"Rainy";
         } else if (code >= 71 && code <= 75) {
-            icon = L"\uE70A";  // Snow (E70A)
+            icon = L"\u2744";  // Snowflake
             cond = L"Snowy";
         } else if (code >= 80 && code <= 82) {
-            icon = L"\uE709";  // Showers
+            icon = L"\u2614";  // Showers
             cond = L"Showers";
         } else if (code >= 95) {
-            icon = L"\uE7CE";  // Thunderstorm/Storm (E7CE)
+            icon = L"\u26A1";  // Lightning
             cond = L"Stormy";
         } else {
-            icon = L"\uE708";  // Cloudy default
+            icon = L"\u2601";  // Cloudy default
             cond = L"Cloudy";
         }
     }
@@ -1672,32 +1775,30 @@ void MapOpenMeteoCode(int code, int is_day) {
             g_cachedIcon = L"⛅";
             g_cachedCondition = L"Cloudy";
         }
-    } else {  // Segoe MDL2 icon style
+    } else { // Segoe MDL2 icon style
         if (code == 0) {
-            g_cachedIcon = is_day ? L"\uE706" : L"\uE708";  // Sunny (E706) or Cloud/Moon (E708)
+            g_cachedIcon = L"\u2600";  // Sunny
             g_cachedCondition = L"Clear";
         } else if (code >= 1 && code <= 3) {
-            g_cachedIcon =
-                code == 3 ? L"\uE708"
-                          : L"\uE7C9";  // Cloud (E708) vs Partly Cloudy (E7C9)
+            g_cachedIcon = code == 3 ? L"\u2601" : L"\u26C5";
             g_cachedCondition = code == 3 ? L"Cloudy" : L"Partly Cloudy";
         } else if (code == 45 || code == 48) {
-            g_cachedIcon = L"\uE7C8";  // Fog (E7C8)
+            g_cachedIcon = L"\u2601";
             g_cachedCondition = L"Foggy";
         } else if (code >= 51 && code <= 65) {
-            g_cachedIcon = L"\uE709";  // Rain (E709)
+            g_cachedIcon = L"\u2614";
             g_cachedCondition = L"Rainy";
         } else if (code >= 71 && code <= 75) {
-            g_cachedIcon = L"\uE70A";  // Snow (E70A)
+            g_cachedIcon = L"\u2744";
             g_cachedCondition = L"Snowy";
         } else if (code >= 80 && code <= 82) {
-            g_cachedIcon = L"\uE709";  // Showers
+            g_cachedIcon = L"\u2614";
             g_cachedCondition = L"Showers";
         } else if (code >= 95) {
-            g_cachedIcon = L"\uE7CE";  // Thunderstorm/Storm (E7CE)
+            g_cachedIcon = L"\u26A1";
             g_cachedCondition = L"Stormy";
         } else {
-            g_cachedIcon = L"\uE708";  // Cloudy
+            g_cachedIcon = L"\u2601";
             g_cachedCondition = L"Cloudy";
         }
     }
@@ -1781,6 +1882,11 @@ void QueueWeatherUpdateOnUIThread() {
             SetWindowPos(
                 hClock, NULL, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+        if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd)) {
+            SetWindowPos(g_hSubclassedWnd, NULL, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            RedrawWindow(g_hSubclassedWnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
         }
     }
 
@@ -1869,7 +1975,7 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                             }
                             
                             if (g_debugLogs) {
-                                Wh_Log(L"[EP_WeatherHost] WinRT Geolocator success", 
+                                Wh_Log(L"[EP_WeatherHost] WinRT Geolocator success: %s (Lat=%f, Lon=%f)", 
                                        g_displayCity.c_str(), g_cachedLatitude, g_cachedLongitude);
                             }
                             preciseSuccess = true;
@@ -2268,6 +2374,7 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                     swprintf(timeBuf, L"%d %s", displayHour,
                              (militaryHour >= 12) ? L"PM" : L"AM");
                     hourData.timeString = timeBuf;
+                    hourData.hour24 = militaryHour;
 
                     hourData.tempRaw = wcstod(hTempVec[i].c_str(), NULL);
                     hourData.precipRaw = wcstod(hPrecipVec[i].c_str(), NULL);
@@ -2352,9 +2459,19 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
 
         DWORD sleepMs =
             updateSuccess ? (g_updateInterval * 60 * 1000) : (60 * 1000);
-        DWORD waitStatus = WaitForSingleObject(g_hForceUpdateEvent, sleepMs);
-        if (waitStatus == WAIT_OBJECT_0) {
-            ResetEvent(g_hForceUpdateEvent);
+        DWORD elapsedMs = 0;
+        while (elapsedMs < sleepMs && !g_bThreadShouldTerm) {
+            HWND currentTarget = ShouldUseXamlTaskbar() ? FindSystemAnchorWnd() : FindTrayNotifyWnd();
+            if (currentTarget && (currentTarget != g_hSubclassedWnd || !IsWindow(g_hSubclassedWnd))) {
+                AlignOverlayWindow();
+            }
+
+            DWORD waitStatus = WaitForSingleObject(g_hForceUpdateEvent, 1000);
+            if (waitStatus == WAIT_OBJECT_0) {
+                ResetEvent(g_hForceUpdateEvent);
+                break;
+            }
+            elapsedMs += 1000;
         }
     }
 
@@ -2697,6 +2814,7 @@ bool g_win10WeatherHovered = false;
 bool g_win10WeatherPressed = false;
 bool g_win10TrackingMouse = false;
 bool g_modUnloaded = false;
+int g_lastAddedWeatherWidth = 115;
 
 typedef BOOL (WINAPI *PFN_ALPHABLEND)(HDC, int, int, int, int, HDC, int, int, int, int, BLENDFUNCTION);
 
@@ -2747,6 +2865,76 @@ void AlphaBlendSolidColor(HDC hdcDest, int x, int y, int w, int h, COLORREF colo
 
 #define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
 #define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+
+int GetRequiredWeatherWidth(HWND hWnd) {
+    if (!g_weatherAcquired || g_modUnloaded) {
+        return 0;
+    }
+
+    int minimumWidth = g_showConditionName ? 115 : 55;
+    
+    HDC hdc = hWnd ? GetDC(hWnd) : GetDC(NULL);
+    if (!hdc) return minimumWidth;
+
+    std::wstring l1Family = g_line1FontFamily.empty() ? L"Segoe UI" : g_line1FontFamily;
+    std::wstring l2Family = g_line2FontFamily.empty() ? L"Segoe UI" : g_line2FontFamily;
+
+    HFONT hFontTemp = CreateFontW(
+        -g_line1FontSize, 0, 0, 0, g_line1Bold ? FW_BOLD : FW_NORMAL, FALSE,
+        FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, l1Family.c_str());
+
+    HFONT hFontCond = CreateFontW(
+        -g_line2FontSize, 0, 0, 0, g_line2Bold ? FW_BOLD : FW_NORMAL, FALSE,
+        FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, l2Family.c_str());
+
+    HFONT hFontIcon = CreateFontW(
+        -(g_iconFontSize + 5), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+        (g_weatherStyle == 1) ? L"Segoe UI Symbol" : L"Segoe UI Emoji");
+
+    HFONT hOldFont = (HFONT)SelectObject(hdc, hFontIcon);
+    SIZE szIcon = {0};
+    GetTextExtentPoint32W(hdc, g_cachedIcon.c_str(), g_cachedIcon.length(), &szIcon);
+
+    int maxTextWidth = 0;
+    SIZE szTemp = {0}, szCond = {0};
+    if (g_showConditionName) {
+        SelectObject(hdc, hFontTemp);
+        GetTextExtentPoint32W(hdc, g_cachedTemp.c_str(), g_cachedTemp.length(), &szTemp);
+        SelectObject(hdc, hFontCond);
+        GetTextExtentPoint32W(hdc, g_cachedCondition.c_str(), g_cachedCondition.length(), &szCond);
+        maxTextWidth = szTemp.cx > szCond.cx ? szTemp.cx : szCond.cx;
+    } else {
+        SelectObject(hdc, hFontTemp);
+        GetTextExtentPoint32W(hdc, g_cachedTemp.c_str(), g_cachedTemp.length(), &szTemp);
+        maxTextWidth = szTemp.cx;
+    }
+
+    SelectObject(hdc, hOldFont);
+    DeleteObject(hFontTemp);
+    DeleteObject(hFontCond);
+    DeleteObject(hFontIcon);
+    
+    if (hWnd) ReleaseDC(hWnd, hdc);
+    else ReleaseDC(NULL, hdc);
+
+    // Dynamic width calculation
+    int requiredWidth = szIcon.cx + 8 + maxTextWidth + 12; // 12px right padding, 8px spacing
+    if (requiredWidth < minimumWidth) {
+        requiredWidth = minimumWidth;
+    }
+    // Set a sensible maximum width to avoid taking over the whole taskbar under weird inputs (e.g. 250px)
+    if (requiredWidth > 250) {
+        requiredWidth = 250;
+    }
+
+    g_lastAddedWeatherWidth = requiredWidth;
+    return requiredWidth;
+}
+
 void PaintWin10Weather(HWND hWnd, HDC hdc) {
     if (!g_weatherAcquired || g_modUnloaded)
         return;
@@ -2759,7 +2947,7 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
     int winHeight = rcWin.bottom - rcWin.top;
     bool isHorizontal = winWidth > winHeight;
 
-    int weatherSpace = g_showConditionName ? 115 : 55;
+    int weatherSpace = GetRequiredWeatherWidth(hWnd);
     int drawWidth = isHorizontal ? weatherSpace : winWidth;
     int drawHeight = isHorizontal ? winHeight : weatherSpace;
 
@@ -2782,13 +2970,17 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, l2Family.c_str());
 
     HFONT hFontIcon = CreateFontW(
-        -g_iconFontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        -(g_iconFontSize + 5), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-        (g_weatherStyle == 1) ? L"Segoe MDL2 Assets" : L"Segoe UI Emoji");
+        (g_weatherStyle == 1) ? L"Segoe UI Symbol" : L"Segoe UI Emoji");
 
     int weatherWidth = drawWidth;
     int height = drawHeight;
+
+    // Draw the clock window's parent background first so we clear any ghost hover colors
+    RECT rcParentBg = {0, 0, weatherWidth, height};
+    DrawThemeParentBackground(hWnd, hdc, &rcParentBg);
 
     // Draw hover/pressed background first
     if (g_win10WeatherHovered || g_win10WeatherPressed) {
@@ -2825,7 +3017,8 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
     if (startX < 4) startX = 4;
     
     SelectObject(hdc, hFontIcon);
-    RECT rcIcon = {startX, 0, startX + szIcon.cx, height};
+    int yOffset = (g_weatherStyle == 1) ? 1 : -3;
+    RECT rcIcon = {startX, yOffset, startX + szIcon.cx, height + yOffset};
     DrawTextW(hdc, g_cachedIcon.c_str(), -1, &rcIcon,
               DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
 
@@ -2939,7 +3132,7 @@ void ShowWin10ForecastPopup(HWND hClock) {
         else if (g_forecastDaysFetch >= 10)
             panelWidth = 444.0;
 
-        double panelHeight = 260.0;
+        double panelHeight = 365.0;
 
         double dpiScale = GetDpiScaleForWindow(hClock);
         int physicalWidth = (int)(panelWidth * dpiScale);
@@ -2955,7 +3148,7 @@ void ShowWin10ForecastPopup(HWND hClock) {
         }
         SHAppBarMessage(ABM_GETTASKBARPOS, &abd);
 
-        int weatherWidth = g_showConditionName ? 115 : 55;
+        int weatherWidth = GetRequiredWeatherWidth(hClock);
 
         double offsetX = clockRect.left + (weatherWidth / 2.0) - (physicalWidth / 2.0);
         double offsetY = clockRect.top - physicalHeight - 10;
@@ -3040,6 +3233,7 @@ void ShowWin10ForecastPopup(HWND hClock) {
         if (g_win10PopupHwnd && g_win10XamlSource) {
             Grid rootGrid;
             g_selectedDate = L"";
+            g_graphScrollOffset = -1.0;
             g_selectedGraphTab = 0;
             PopulateForecastUI(rootGrid, g_cachedCondition, g_cachedIcon, g_cachedTemp);
 
@@ -3082,7 +3276,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
         if (uMsg == WM_WINDOWPOSCHANGING) {
             WINDOWPOS* lpwp = (WINDOWPOS*)lParam;
             if (!(lpwp->flags & SWP_NOSIZE)) {
-                int weatherWidth = g_showConditionName ? 115 : 55;
+                int weatherWidth = GetRequiredWeatherWidth(hWnd);
                 if (g_modUnloaded) {
                     weatherWidth = 0;
                 }
@@ -3096,7 +3290,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
                 }
             }
         } else if (uMsg == WM_NCCALCSIZE) {
-            int weatherWidth = g_showConditionName ? 115 : 55;
+            int weatherWidth = GetRequiredWeatherWidth(hWnd);
             if (g_modUnloaded) weatherWidth = 0;
             
             RECT* clientRect = nullptr;
@@ -3144,7 +3338,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             int width = rc.right - rc.left;
             bool isHorizontal = width > height;
 
-            int weatherWidth = g_showConditionName ? 115 : 55;
+            int weatherWidth = GetRequiredWeatherWidth(hWnd);
             if (g_modUnloaded) weatherWidth = 0;
 
             if (isHorizontal) {
@@ -3164,7 +3358,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             bool isHorizontal = width > height;
 
             int pos = isHorizontal ? GET_X_LPARAM(lParam) : GET_Y_LPARAM(lParam);
-            int weatherWidth = g_showConditionName ? 115 : 55;
+            int weatherWidth = GetRequiredWeatherWidth(hWnd);
             if (g_modUnloaded) weatherWidth = 0;
             bool overBtn = (pos >= -weatherWidth && pos < 0);
 
@@ -3195,7 +3389,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             bool isHorizontal = width > height;
 
             int pos = isHorizontal ? GET_X_LPARAM(lParam) : GET_Y_LPARAM(lParam);
-            int weatherWidth = g_showConditionName ? 115 : 55;
+            int weatherWidth = GetRequiredWeatherWidth(hWnd);
             if (g_modUnloaded) weatherWidth = 0;
             if (pos >= -weatherWidth && pos < 0) {
                 g_win10WeatherPressed = true;
@@ -3212,7 +3406,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             bool isHorizontal = width > height;
 
             int pos = isHorizontal ? GET_X_LPARAM(lParam) : GET_Y_LPARAM(lParam);
-            int weatherWidth = g_showConditionName ? 115 : 55;
+            int weatherWidth = GetRequiredWeatherWidth(hWnd);
             if (g_modUnloaded) weatherWidth = 0;
             if (g_win10WeatherPressed) {
                 g_win10WeatherPressed = false;
@@ -3256,12 +3450,43 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
     return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
 
+void RestoreDefaultWindowSize(HWND hwndToClean) {
+    if (!hwndToClean || !IsWindow(hwndToClean)) return;
+    if (ShouldUseXamlTaskbar()) return;
+
+    int weatherWidth = g_showConditionName ? 115 : 55;
+    RECT rc = {0};
+    GetWindowRect(hwndToClean, &rc);
+    HWND hParent = GetParent(hwndToClean);
+    if (hParent) {
+        MapWindowPoints(NULL, hParent, (LPPOINT)&rc, 2);
+    }
+    int x = rc.left;
+    int y = rc.top;
+    int cx = rc.right - rc.left;
+    int cy = rc.bottom - rc.top;
+    
+    bool isHorizontal = cx > cy;
+    if (isHorizontal) {
+        cx -= weatherWidth;
+        x += weatherWidth;
+    } else {
+        cy -= weatherWidth;
+        y += weatherWidth;
+    }
+    
+    SetWindowPos(hwndToClean, NULL, x, y, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    RedrawWindow(hwndToClean, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
+}
+
 void AlignOverlayWindow() {
+    EnterCriticalSection(&g_subclassLock);
     HWND hTarget = ShouldUseXamlTaskbar() ? FindSystemAnchorWnd() : FindTrayNotifyWnd();
-    if (hTarget && g_hSubclassedWnd != hTarget) {
-        if (g_hSubclassedWnd && g_pfnOldClockWndProc) {
+    if (hTarget && (g_hSubclassedWnd != hTarget || !IsWindow(g_hSubclassedWnd))) {
+        if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd) && g_pfnOldClockWndProc) {
             SetWindowLongPtrW(g_hSubclassedWnd, GWLP_WNDPROC,
                               (LONG_PTR)g_pfnOldClockWndProc);
+            RestoreDefaultWindowSize(g_hSubclassedWnd);
         }
         g_hSubclassedWnd = hTarget;
         g_pfnOldClockWndProc = (WNDPROC)SetWindowLongPtrW(
@@ -3272,7 +3497,12 @@ void AlignOverlayWindow() {
                 L"(XamlTaskbar=%d)",
                 hTarget, ShouldUseXamlTaskbar());
         }
+        if (g_pfnOldClockWndProc) {
+            SetWindowPos(hTarget, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            RedrawWindow(hTarget, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
+        }
     }
+    LeaveCriticalSection(&g_subclassLock);
 }
 
 void LoadModConfiguration() {
@@ -3372,6 +3602,25 @@ void ForceTaskbarUpdateOriginal() {
     }
 }
 
+DWORD WINAPI SubclassWatchdogThread(LPVOID lpParam) {
+    int checkCount = 0;
+    while (!g_bThreadShouldTerm) {
+        HWND currentTarget = ShouldUseXamlTaskbar() ? FindSystemAnchorWnd() : FindTrayNotifyWnd();
+        if (currentTarget && (currentTarget != g_hSubclassedWnd || !IsWindow(g_hSubclassedWnd))) {
+            AlignOverlayWindow();
+        }
+        DWORD sleepTime = (checkCount < 60) ? 500 : 2000;
+        
+        DWORD elapsed = 0;
+        while (elapsed < sleepTime && !g_bThreadShouldTerm) {
+            Sleep(100);
+            elapsed += 100;
+        }
+        checkCount++;
+    }
+    return 0;
+}
+
 // Windhawk mod Entry Point
 BOOL Wh_ModInit() {
     g_isShellProcess = IsShellProcess();
@@ -3380,6 +3629,7 @@ BOOL Wh_ModInit() {
     }
 
     InitializeCriticalSection(&g_forecastLock);
+    InitializeCriticalSection(&g_subclassLock);
     g_hForceUpdateEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     LoadModConfiguration();
@@ -3389,6 +3639,10 @@ BOOL Wh_ModInit() {
     // Background weather crawl
     g_hQueryThread =
         CreateThread(NULL, 0, QueryWeatherPipeline, NULL, 0, &g_dwThreadId);
+
+    // Watchdog thread for rapid, automated taskbar subclass injection/maintenance
+    g_hWatchdogThread =
+        CreateThread(NULL, 0, SubclassWatchdogThread, NULL, 0, NULL);
 
     // Initial check if taskbar module is loaded or intercept via library load
     // hooks
@@ -3409,9 +3663,10 @@ BOOL Wh_ModInit() {
     // subclass hook
     HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
     if (hTaskbar) {
-        PostMessageW(hTaskbar, WM_SETTINGCHANGE, 0,
-                     (LPARAM)L"ImmersiveColorSet");
-        PostMessageW(hTaskbar, WM_THEMECHANGED, 0, 0);
+        SendMessageTimeoutW(hTaskbar, WM_SETTINGCHANGE, 0,
+                            (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, NULL);
+        SendMessageTimeoutW(hTaskbar, WM_THEMECHANGED, 0, 0,
+                            SMTO_ABORTIFHUNG, 1000, NULL);
     }
 
     // Force tasks to refresh immediately so scan triggers without clicking
@@ -3433,31 +3688,44 @@ void Wh_ModUninit() {
     if (g_debugLogs)
         Wh_Log(L"[EP_WeatherHost] Unloading mod...");
 
+    EnterCriticalSection(&g_subclassLock);
     if (g_hSubclassedWnd && g_pfnOldClockWndProc) {
         g_modUnloaded = true;
+        HWND hwndToClean = g_hSubclassedWnd;
+        WNDPROC originalProc = g_pfnOldClockWndProc;
 
-        if (!ShouldUseXamlTaskbar()) {
-            SetWindowPos(g_hSubclassedWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-            InvalidateRect(g_hSubclassedWnd, NULL, TRUE);
-        }
-
-        SetWindowLongPtrW(g_hSubclassedWnd, GWLP_WNDPROC,
-                          (LONG_PTR)g_pfnOldClockWndProc);
+        SetWindowLongPtrW(hwndToClean, GWLP_WNDPROC, (LONG_PTR)originalProc);
         g_pfnOldClockWndProc = NULL;
         g_hSubclassedWnd = NULL;
+
+        RestoreDefaultWindowSize(hwndToClean);
+
+        HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+        if (hTaskbar) {
+            SendMessageTimeoutW(hTaskbar, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, NULL);
+            SendMessageTimeoutW(hTaskbar, WM_THEMECHANGED, 0, 0, SMTO_ABORTIFHUNG, 1000, NULL);
+        }
+        ForceTaskbarUpdateOriginal();
     }
+    LeaveCriticalSection(&g_subclassLock);
 
     g_bThreadShouldTerm = true;
     if (g_hForceUpdateEvent) {
         SetEvent(g_hForceUpdateEvent);
     }
-    // Give background thread a moment to exit
+    // Give background threads a moment to exit
     Sleep(50);
 
     if (g_hQueryThread) {
         WaitForSingleObject(g_hQueryThread, 3000);
         CloseHandle(g_hQueryThread);
         g_hQueryThread = NULL;
+    }
+
+    if (g_hWatchdogThread) {
+        WaitForSingleObject(g_hWatchdogThread, 3000);
+        CloseHandle(g_hWatchdogThread);
+        g_hWatchdogThread = NULL;
     }
 
     if (g_hForceUpdateEvent) {
@@ -3485,6 +3753,7 @@ void Wh_ModUninit() {
     }
 
     DeleteCriticalSection(&g_forecastLock);
+    DeleteCriticalSection(&g_subclassLock);
 }
 
 // Settings update receiver
