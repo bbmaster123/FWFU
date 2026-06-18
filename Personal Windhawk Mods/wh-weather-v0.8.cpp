@@ -5,7 +5,7 @@
 // @version         1.1.0
 // @author          Gemini
 // @include         explorer.exe
-// @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion
+// @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion -lcomctl32
 // ==/WindhawkMod==
 
 // ==WindhawkModSettings==
@@ -64,6 +64,7 @@
 #include <windhawk_utils.h>
 #include <windows.h>
 #include <dwmapi.h>
+#include <commctrl.h>
 #include <uxtheme.h>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -179,6 +180,7 @@ CRITICAL_SECTION g_subclassLock;
 bool g_forecastAcquired = false;
 
 extern HWND g_hSubclassedWnd;
+bool IsWindows11();
 void AlignOverlayWindow();
 void RestoreDefaultWindowSize(HWND hwndToClean);
 int GetRequiredWeatherWidth(HWND hWnd);
@@ -521,7 +523,11 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     rootGrid.Width(panelWidth);
     rootGrid.MaxWidth(9999.0);
 
-    rootGrid.CornerRadius(CornerRadius{8.0, 8.0, 8.0, 8.0});
+    if (IsWindows11()) {
+        rootGrid.CornerRadius(CornerRadius{8.0, 8.0, 8.0, 8.0});
+    } else {
+        rootGrid.CornerRadius(CornerRadius{0.0, 0.0, 0.0, 0.0});
+    }
 
     // Attempt Acrylic Backdrop
     try {
@@ -2807,7 +2813,6 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName,
     return module;
 }
 
-WNDPROC g_pfnOldClockWndProc = NULL;
 HWND g_hSubclassedWnd = NULL;
 
 bool g_win10WeatherHovered = false;
@@ -2978,9 +2983,16 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
     int weatherWidth = drawWidth;
     int height = drawHeight;
 
-    // Draw the clock window's parent background first so we clear any ghost hover colors
+    // Fix for Issue 2: GDI text rendering on DWM composited surfaces sets alpha to 0. 
+    // We must use BufferedPaint and DrawThemeTextEx to fix faint/transparent text in HDR.
     RECT rcParentBg = {0, 0, weatherWidth, height};
-    DrawThemeParentBackground(hWnd, hdc, &rcParentBg);
+    BP_PAINTPARAMS params = {sizeof(BP_PAINTPARAMS), 0, NULL, NULL};
+    HDC hdcPaint = NULL;
+    HPAINTBUFFER hBufferedPaint = BeginBufferedPaint(hdc, &rcParentBg, BPBF_TOPDOWNDIB, &params, &hdcPaint);
+    HDC drawDc = hBufferedPaint ? hdcPaint : hdc;
+
+    // Draw the clock window's parent background first so we clear any ghost hover colors
+    DrawThemeParentBackground(hWnd, drawDc, &rcParentBg);
 
     // Draw hover/pressed background first
     if (g_win10WeatherHovered || g_win10WeatherPressed) {
@@ -2989,26 +3001,40 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
             hoverBgColor = RGB(0, 0, 0); // dark text, light taskbar -> black hover
         }
         BYTE alpha = g_win10WeatherPressed ? 51 : 26; // 20% pressed, 10% hovered
-        AlphaBlendSolidColor(hdc, 0, 0, weatherWidth, height, hoverBgColor, alpha);
+        AlphaBlendSolidColor(drawDc, 0, 0, weatherWidth, height, hoverBgColor, alpha);
     }
 
-    HFONT hOldFont = (HFONT)SelectObject(hdc, hFontIcon);
+    HTHEME hTheme = OpenThemeData(hWnd, L"Taskbar");
+    DTTOPTS dttOpts = { sizeof(DTTOPTS) };
+    dttOpts.dwFlags = DTT_TEXTCOLOR | DTT_COMPOSITED;
+    dttOpts.crText = g_textColor;
+
+    auto DrawTextAlpha = [&](HFONT font, const std::wstring& str, RECT& rc, UINT flags) {
+        SelectObject(drawDc, font);
+        if (hTheme && hBufferedPaint) {
+            DrawThemeTextEx(hTheme, drawDc, 0, 0, str.c_str(), -1, flags, &rc, &dttOpts);
+        } else {
+            DrawTextW(drawDc, str.c_str(), -1, &rc, flags);
+        }
+    };
+
+    HFONT hOldFont = (HFONT)SelectObject(drawDc, hFontIcon);
     
     // Calculate precise centering
     SIZE szIcon = {0};
-    GetTextExtentPoint32W(hdc, g_cachedIcon.c_str(), g_cachedIcon.length(), &szIcon);
+    GetTextExtentPoint32W(drawDc, g_cachedIcon.c_str(), g_cachedIcon.length(), &szIcon);
     
     int maxTextWidth = 0;
     SIZE szTemp = {0}, szCond = {0};
     if (g_showConditionName) {
-        SelectObject(hdc, hFontTemp);
-        GetTextExtentPoint32W(hdc, g_cachedTemp.c_str(), g_cachedTemp.length(), &szTemp);
-        SelectObject(hdc, hFontCond);
-        GetTextExtentPoint32W(hdc, g_cachedCondition.c_str(), g_cachedCondition.length(), &szCond);
+        SelectObject(drawDc, hFontTemp);
+        GetTextExtentPoint32W(drawDc, g_cachedTemp.c_str(), g_cachedTemp.length(), &szTemp);
+        SelectObject(drawDc, hFontCond);
+        GetTextExtentPoint32W(drawDc, g_cachedCondition.c_str(), g_cachedCondition.length(), &szCond);
         maxTextWidth = szTemp.cx > szCond.cx ? szTemp.cx : szCond.cx;
     } else {
-        SelectObject(hdc, hFontTemp);
-        GetTextExtentPoint32W(hdc, g_cachedTemp.c_str(), g_cachedTemp.length(), &szTemp);
+        SelectObject(drawDc, hFontTemp);
+        GetTextExtentPoint32W(drawDc, g_cachedTemp.c_str(), g_cachedTemp.length(), &szTemp);
         maxTextWidth = szTemp.cx;
     }
     
@@ -3016,35 +3042,29 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
     int startX = (weatherWidth - totalWidth) / 2;
     if (startX < 4) startX = 4;
     
-    SelectObject(hdc, hFontIcon);
     int yOffset = (g_weatherStyle == 1) ? 1 : -3;
     RECT rcIcon = {startX, yOffset, startX + szIcon.cx, height + yOffset};
-    DrawTextW(hdc, g_cachedIcon.c_str(), -1, &rcIcon,
-              DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+    DrawTextAlpha(hFontIcon, g_cachedIcon, rcIcon, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
 
     int textLeft = startX + szIcon.cx + 4;
     int textWidth = weatherWidth - textLeft;
 
     if (g_showConditionName) {
-        SelectObject(hdc, hFontTemp);
         RECT rcTemp = {textLeft, height / 2 - g_line1FontSize,
                        textLeft + textWidth, height / 2};
-        DrawTextW(hdc, g_cachedTemp.c_str(), -1, &rcTemp,
-                  DT_SINGLELINE | DT_BOTTOM | DT_LEFT | DT_NOPREFIX);
+        DrawTextAlpha(hFontTemp, g_cachedTemp, rcTemp, DT_SINGLELINE | DT_BOTTOM | DT_LEFT | DT_NOPREFIX);
 
-        SelectObject(hdc, hFontCond);
         RECT rcCond = {textLeft, height / 2, textLeft + textWidth,
                        height / 2 + g_line2FontSize + 2};
-        DrawTextW(hdc, g_cachedCondition.c_str(), -1, &rcCond,
-                  DT_SINGLELINE | DT_TOP | DT_LEFT | DT_NOPREFIX);
+        DrawTextAlpha(hFontCond, g_cachedCondition, rcCond, DT_SINGLELINE | DT_TOP | DT_LEFT | DT_NOPREFIX);
     } else {
-        SelectObject(hdc, hFontTemp);
         RECT rcTemp = {textLeft, 0, textLeft + textWidth, height};
-        DrawTextW(hdc, g_cachedTemp.c_str(), -1, &rcTemp,
-                  DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+        DrawTextAlpha(hFontTemp, g_cachedTemp, rcTemp, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
     }
 
-    SelectObject(hdc, hOldFont);
+    if (hTheme) CloseThemeData(hTheme);
+    if (hBufferedPaint) EndBufferedPaint(hBufferedPaint, TRUE);
+    SelectObject(drawDc, hOldFont);
     DeleteObject(hFontTemp);
     DeleteObject(hFontCond);
     DeleteObject(hFontIcon);
@@ -3271,9 +3291,11 @@ void InvalidateClockParentRegion(HWND hWnd) {
 LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
                                       UINT uMsg,
                                       WPARAM wParam,
-                                      LPARAM lParam) {
+                                      LPARAM lParam,
+                                      DWORD_PTR dwRefData) {
     if (!ShouldUseXamlTaskbar()) {
         if (uMsg == WM_WINDOWPOSCHANGING) {
+            LRESULT res = DefSubclassProc(hWnd, uMsg, wParam, lParam);
             WINDOWPOS* lpwp = (WINDOWPOS*)lParam;
             if (!(lpwp->flags & SWP_NOSIZE)) {
                 int weatherWidth = GetRequiredWeatherWidth(hWnd);
@@ -3288,8 +3310,13 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
                     lpwp->cy += weatherWidth;
                     lpwp->y -= weatherWidth;
                 }
+                // Fix for Issue 1: Windows ignores manual x/y coordinate modifications in 
+                // WM_WINDOWPOSCHANGING if the SWP_NOMOVE flag was sent by the caller.
+                lpwp->flags &= ~SWP_NOMOVE;
             }
+            return res;
         } else if (uMsg == WM_NCCALCSIZE) {
+            LRESULT res = DefSubclassProc(hWnd, uMsg, wParam, lParam);
             int weatherWidth = GetRequiredWeatherWidth(hWnd);
             if (g_modUnloaded) weatherWidth = 0;
             
@@ -3308,13 +3335,12 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             } else {
                 clientRect->top += weatherWidth;
             }
-            
-            return 0;
+            return res;
         } else if (uMsg == WM_WINDOWPOSCHANGED || uMsg == WM_SIZE) {
-            LRESULT res = CallWindowProcW(g_pfnOldClockWndProc, hWnd, uMsg, wParam, lParam);
+            LRESULT res = DefSubclassProc(hWnd, uMsg, wParam, lParam);
             return res;
         } else if (uMsg == WM_NCPAINT) {
-            LRESULT res = CallWindowProcW(g_pfnOldClockWndProc, hWnd, uMsg, wParam, lParam);
+            LRESULT res = DefSubclassProc(hWnd, uMsg, wParam, lParam);
             
             HDC hdc = GetWindowDC(hWnd);
             if (hdc) {
@@ -3324,7 +3350,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             return res;
         } else if (uMsg == WM_PAINT) {
             // Let the original window proc paint the TrayNotifyWnd
-            LRESULT res = CallWindowProcW(g_pfnOldClockWndProc, hWnd, uMsg, wParam, lParam);
+            LRESULT res = DefSubclassProc(hWnd, uMsg, wParam, lParam);
             return res;
         } else if (uMsg == WM_NCHITTEST) {
             POINT pt;
@@ -3443,11 +3469,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             }
         }
     }
-    if (g_pfnOldClockWndProc) {
-        return CallWindowProcW(g_pfnOldClockWndProc, hWnd, uMsg, wParam,
-                               lParam);
-    }
-    return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
 void RestoreDefaultWindowSize(HWND hwndToClean) {
@@ -3483,21 +3505,18 @@ void AlignOverlayWindow() {
     EnterCriticalSection(&g_subclassLock);
     HWND hTarget = ShouldUseXamlTaskbar() ? FindSystemAnchorWnd() : FindTrayNotifyWnd();
     if (hTarget && (g_hSubclassedWnd != hTarget || !IsWindow(g_hSubclassedWnd))) {
-        if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd) && g_pfnOldClockWndProc) {
-            SetWindowLongPtrW(g_hSubclassedWnd, GWLP_WNDPROC,
-                              (LONG_PTR)g_pfnOldClockWndProc);
+        if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd)) {
+            WindhawkUtils::RemoveWindowSubclassFromAnyThread(g_hSubclassedWnd, ClockSubclassWndProc);
             RestoreDefaultWindowSize(g_hSubclassedWnd);
         }
         g_hSubclassedWnd = hTarget;
-        g_pfnOldClockWndProc = (WNDPROC)SetWindowLongPtrW(
-            hTarget, GWLP_WNDPROC, (LONG_PTR)ClockSubclassWndProc);
-        if (g_debugLogs && g_pfnOldClockWndProc) {
-            Wh_Log(
-                L"[Wh_WeatherHost] Successfully subclassed Target HWND=%p "
-                L"(XamlTaskbar=%d)",
-                hTarget, ShouldUseXamlTaskbar());
-        }
-        if (g_pfnOldClockWndProc) {
+        if (WindhawkUtils::SetWindowSubclassFromAnyThread(hTarget, ClockSubclassWndProc, NULL)) {
+            if (g_debugLogs) {
+                Wh_Log(
+                    L"[Wh_WeatherHost] Successfully subclassed Target HWND=%p "
+                    L"(XamlTaskbar=%d)",
+                    hTarget, ShouldUseXamlTaskbar());
+            }
             SetWindowPos(hTarget, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             RedrawWindow(hTarget, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
         }
@@ -3689,13 +3708,11 @@ void Wh_ModUninit() {
         Wh_Log(L"[EP_WeatherHost] Unloading mod...");
 
     EnterCriticalSection(&g_subclassLock);
-    if (g_hSubclassedWnd && g_pfnOldClockWndProc) {
+    if (g_hSubclassedWnd) {
         g_modUnloaded = true;
         HWND hwndToClean = g_hSubclassedWnd;
-        WNDPROC originalProc = g_pfnOldClockWndProc;
 
-        SetWindowLongPtrW(hwndToClean, GWLP_WNDPROC, (LONG_PTR)originalProc);
-        g_pfnOldClockWndProc = NULL;
+        WindhawkUtils::RemoveWindowSubclassFromAnyThread(hwndToClean, ClockSubclassWndProc);
         g_hSubclassedWnd = NULL;
 
         RestoreDefaultWindowSize(hwndToClean);
