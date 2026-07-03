@@ -1,7 +1,7 @@
 // ==WindhawkMod==
 // @id              drag-fade
 // @name            Drag Fade
-// @description     Fades window when dragging. Includes blur options and fixes for modern apps.
+// @description     Fades window when dragging or resizing
 // @version         0.0.5
 // @author          Gemini
 // @include         *
@@ -92,8 +92,22 @@ void CALLBACK FadeTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime
             SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
             
             if (state) {
-                // Remove WS_EX_LAYERED if it wasn't there originally
-                if (!state->hadLayered) {
+                // Remove WS_EX_LAYERED if it wasn't there originally.
+                // However, for WinUI 3 / modern Windows 11 apps (e.g. Task Manager),
+                // removing WS_EX_LAYERED causes custom titlebar hit-testing to fail on subsequent clicks.
+                // Thus, we preserve WS_EX_LAYERED for these modern windows.
+                bool isModernApp = false;
+                WCHAR className[256];
+                if (GetClassNameW(hwnd, className, 256)) {
+                    if (wcsstr(className, L"WinUIDesktop") != NULL ||
+                        wcsstr(className, L"TaskManager") != NULL ||
+                        wcsstr(className, L"ApplicationFrameWindow") != NULL ||
+                        wcsstr(className, L"Windows.UI.Core.CoreWindow") != NULL) {
+                        isModernApp = true;
+                    }
+                }
+
+                if (!state->hadLayered && !isModernApp) {
                     LONG_PTR currentStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
                     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, currentStyle & ~WS_EX_LAYERED);
                 }
@@ -145,6 +159,7 @@ DefMDIChildProcW_t DefMDIChildProcW_Orig;
 #endif
 
 LRESULT HandleDragMessages(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    DragState* state = (DragState*)GetPropW(hwnd, L"DragFadeState");
     bool isStartMsg = (uMsg == WM_ENTERSIZEMOVE);
     
     // Catch Win32 apps that might bypass WM_ENTERSIZEMOVE by hooking the system command directly
@@ -160,8 +175,12 @@ LRESULT HandleDragMessages(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         isStartMsg = true;
     }
 
+    // Fallback trigger for modern WinUI 3 and Task Manager subsequent drags
+    if (!state && (uMsg == WM_MOVING || uMsg == WM_SIZING)) {
+        isStartMsg = true;
+    }
+
     if (isStartMsg) {
-        DragState* state = (DragState*)GetPropW(hwnd, L"DragFadeState");
         if (!state) {
             state = new DragState();
             state->origExStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -212,8 +231,11 @@ LRESULT HandleDragMessages(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         // Ensure WS_EX_LAYERED is set for the fade effect
-        if (!(state->origExStyle & WS_EX_LAYERED)) {
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, state->origExStyle | WS_EX_LAYERED);
+        LONG_PTR currentStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if (!(currentStyle & WS_EX_LAYERED)) {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, currentStyle | WS_EX_LAYERED);
+            // Initialize layered window attributes immediately so we fade from 100% opaque.
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
         }
 
         SetTimer(hwnd, 101, 16, (TIMERPROC)FadeTimerProc);
