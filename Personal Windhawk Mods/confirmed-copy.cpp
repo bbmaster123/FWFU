@@ -2,7 +2,7 @@
 // @id              confirmed-copy
 // @name            confirmed-copy
 // @description     Tri-color copy success indicator. shows something has been copied to the windows clipboard.
-// @version         1.0.0
+// @version         1.0.1
 // @author          bbmaster123/Gemini
 // @include         *
 // @compilerOptions -luser32 -lgdi32 -lmsimg32 -lwinmm
@@ -60,6 +60,9 @@ void LoadSettings() {
     g_enableSound = Wh_GetIntSetting(L"enableSound");
     g_flySpeed = Wh_GetIntSetting(L"flySpeed");
     g_packetSize = Wh_GetIntSetting(L"packetSize");
+
+    if (g_flySpeed < 1 || g_flySpeed > 100) g_flySpeed = 8;
+    if (g_packetSize < 5 || g_packetSize > 500) g_packetSize = 24;
     
     PCWSTR hex1 = Wh_GetStringSetting(L"color1");
     g_c1 = HexToColor(hex1, RGB(0, 255, 0));
@@ -79,6 +82,9 @@ void LoadSettings() {
 }
 
 LRESULT CALLBACK PacketWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (uMsg == WM_ERASEBKGND) {
+        return 1;
+    }
     if (uMsg == WM_PAINT) {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -88,30 +94,40 @@ LRESULT CALLBACK PacketWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
         int w = client.right;
         int h = client.bottom;
 
+        // Fill background with magenta color key first to ensure true transparency with LWA_COLORKEY
+        HBRUSH bgBrush = CreateSolidBrush(RGB(255, 0, 255));
+        FillRect(hdc, &client, bgBrush);
+        DeleteObject(bgBrush);
+
         HPEN nullPen = CreatePen(PS_NULL, 0, 0);
-        SelectObject(hdc, nullPen);
+        HPEN oldPen = (HPEN)SelectObject(hdc, nullPen);
 
         // 1. Layer: Outer Glow (Color 1)
         HBRUSH b1 = CreateSolidBrush(g_c1);
-        SelectObject(hdc, b1);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, b1);
         Ellipse(hdc, 0, 0, w, h);
-        DeleteObject(b1);
 
         // 2. Layer: Mid-Tone (Color 2)
         HBRUSH b2 = CreateSolidBrush(g_c2);
         SelectObject(hdc, b2);
         int m2 = w / 6;
         Ellipse(hdc, m2, m2, w - m2, h - m2);
-        DeleteObject(b2);
 
         // 3. Layer: Core Hotspot (Color 3)
         HBRUSH b3 = CreateSolidBrush(g_c3);
         SelectObject(hdc, b3);
         int m3 = w / 2.5;
         Ellipse(hdc, m3, m3, w - m3, h - m3);
+
+        // Restore original GDI objects
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+
+        DeleteObject(b1);
+        DeleteObject(b2);
         DeleteObject(b3);
-        
         DeleteObject(nullPen);
+
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -122,8 +138,11 @@ void CALLBACK PacketTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTi
     PacketAnim* anim = (PacketAnim*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
     if (!anim) return;
 
-    anim->curX += (anim->targetX - anim->curX) / (float)g_flySpeed;
-    anim->curY += (anim->targetY - anim->curY) / (float)g_flySpeed;
+    int flySpeed = g_flySpeed;
+    if (flySpeed < 1) flySpeed = 1;
+
+    anim->curX += (anim->targetX - anim->curX) / (float)flySpeed;
+    anim->curY += (anim->targetY - anim->curY) / (float)flySpeed;
     anim->alpha -= 5;
     anim->phase += 0.3f;
 
@@ -135,21 +154,39 @@ void CALLBACK PacketTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTi
         KillTimer(hwnd, idEvent);
         DestroyWindow(hwnd);
         HeapFree(GetProcessHeap(), 0, anim);
+        PostQuitMessage(0); // Signal our background thread's message loop to exit
         return;
     }
 
     SetWindowPos(hwnd, NULL, (int)anim->curX, (int)anim->curY, displaySize, displaySize, SWP_NOZORDER | SWP_NOACTIVATE);
-    SetLayeredWindowAttributes(hwnd, 0, (BYTE)MOD_MAX(0, anim->alpha), LWA_ALPHA);
+    SetLayeredWindowAttributes(hwnd, RGB(255, 0, 255), (BYTE)MOD_MAX(0, anim->alpha), LWA_COLORKEY | LWA_ALPHA);
 }
 
-void SpawnPacket(POINT startPt) {
-    if (!g_enableVisual) return;
+struct PacketThreadData {
+    POINT startPt;
+};
+
+void RegisterPacketClassIfNeeded() {
+    static bool registered = false;
+    if (registered) return;
 
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = PacketWndProc;
-    wc.hInstance = GetModuleHandle(NULL);
+    wc.hInstance = NULL;
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpszClassName = L"EchoPlasmaTriClass";
+    wc.hbrBackground = NULL;
     RegisterClassW(&wc);
+    registered = true;
+}
+
+DWORD WINAPI PacketThreadProc(LPVOID lpParam) {
+    PacketThreadData* pData = (PacketThreadData*)lpParam;
+    if (!pData) return 0;
+    POINT startPt = pData->startPt;
+    HeapFree(GetProcessHeap(), 0, pData);
+
+    RegisterPacketClassIfNeeded();
 
     HWND hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -158,7 +195,13 @@ void SpawnPacket(POINT startPt) {
         NULL, NULL, NULL, NULL
     );
 
+    if (!hwnd) return 0;
+
     PacketAnim* anim = (PacketAnim*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(PacketAnim));
+    if (!anim) {
+        DestroyWindow(hwnd);
+        return 0;
+    }
     anim->curX = (float)startPt.x;
     anim->curY = (float)startPt.y;
     anim->targetX = (float)GetSystemMetrics(SM_CXSCREEN) - 40;
@@ -167,10 +210,34 @@ void SpawnPacket(POINT startPt) {
     anim->phase = 0;
 
     SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)anim);
-    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+    SetLayeredWindowAttributes(hwnd, RGB(255, 0, 255), 255, LWA_COLORKEY | LWA_ALPHA);
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
     SetTimer(hwnd, 7006, 16, (TIMERPROC)PacketTimerProc);
+
+    // Keep background thread alive with a dedicated message pump
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    return 0;
+}
+
+void SpawnPacket(POINT startPt) {
+    if (!g_enableVisual) return;
+
+    PacketThreadData* pData = (PacketThreadData*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(PacketThreadData));
+    if (pData) {
+        pData->startPt = startPt;
+        HANDLE hThread = CreateThread(NULL, 0, PacketThreadProc, pData, 0, NULL);
+        if (hThread) {
+            CloseHandle(hThread);
+        } else {
+            HeapFree(GetProcessHeap(), 0, pData);
+        }
+    }
 }
 
 typedef HANDLE (WINAPI *SetClipboardData_t)(UINT, HANDLE);
@@ -193,6 +260,7 @@ HANDLE WINAPI SetClipboardData_Hook(UINT uFormat, HANDLE hMem) {
 
 BOOL Wh_ModInit() {
     LoadSettings();
+
     Wh_SetFunctionHook((void*)GetProcAddress(GetModuleHandle(L"user32.dll"), "SetClipboardData"),
                        (void*)SetClipboardData_Hook,
                        (void**)&SetClipboardData_Orig);
