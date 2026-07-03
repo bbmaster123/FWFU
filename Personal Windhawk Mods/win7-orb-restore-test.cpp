@@ -1,19 +1,19 @@
 // ==WindhawkMod==
 // @id             start-orb-restorer
-// @name           Start Button Orb +
+// @name           Start Orb Plus
 // @description    Stable Windows 7 style Start Orb overlay
-// @version        0.7
+// @version        0.6
 // @author         Bbmaster123/AI
 // @include        explorer.exe
 // @architecture   x86-64
-// @compilerOptions -lgdiplus -lgdi32 -luser32
+// @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi
 // ==/WindhawkMod==
 
 // ==WindhawkModSettings==
 /*
-- orbNormal: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orb.png"
-- orbHover: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbHover.png"
-- orbPressed: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbPressed.png"
+- orbNormal: "C:\\Users\\Brandon\\Desktop\\Junk\\orb\\orb.png"
+- orbHover: "C:\\Users\\Brandon\\Desktop\\Junk\\orb\\orbHover.png"
+- orbPressed: "C:\\Users\\Brandon\\Desktop\\Junk\\orb\\orbPressed.png"
 - orbSize: 72
 - animSpeed: 15
 - minOpacity: 255
@@ -24,6 +24,7 @@
 // ==/WindhawkModSettings==
 
 #include <windows.h>
+#include <dwmapi.h>
 #include <gdiplus.h>
 
 using namespace Gdiplus;
@@ -39,6 +40,7 @@ struct {
 
 HWND g_hOrbWnd = NULL;
 HWND g_hStart = NULL;
+HANDLE g_hOrbThread = NULL;
 
 ULONG_PTR g_gdiToken = 0;
 
@@ -78,9 +80,17 @@ void LoadImages() {
     CleanImages();
 
     EnterCriticalSection(&g_cs);
-    g_imgNormal  = LoadOne(Wh_GetStringSetting(L"orbNormal"));
-    g_imgHover   = LoadOne(Wh_GetStringSetting(L"orbHover"));
-    g_imgPressed = LoadOne(Wh_GetStringSetting(L"orbPressed"));
+    PCWSTR pathNormal = Wh_GetStringSetting(L"orbNormal");
+    PCWSTR pathHover = Wh_GetStringSetting(L"orbHover");
+    PCWSTR pathPressed = Wh_GetStringSetting(L"orbPressed");
+
+    g_imgNormal  = LoadOne(pathNormal);
+    g_imgHover   = LoadOne(pathHover);
+    g_imgPressed = LoadOne(pathPressed);
+
+    Wh_FreeStringSetting(pathNormal);
+    Wh_FreeStringSetting(pathHover);
+    Wh_FreeStringSetting(pathPressed);
     LeaveCriticalSection(&g_cs);
 }
 
@@ -105,28 +115,55 @@ HWND FindStartButton() {
 
 // -------------------- POSITION --------------------
 
+#ifndef DWMWA_EXCLUDED_FROM_PEEK
+#define DWMWA_EXCLUDED_FROM_PEEK 12
+#endif
+
 void PositionOrb() {
     if (!g_hOrbWnd) return;
 
-    if (!g_hStart)
+    HWND hTask = GetParent(g_hOrbWnd);
+    if (!hTask) {
+        hTask = FindWindow(L"Shell_TrayWnd", NULL);
+    }
+    if (!hTask) return;
+
+    if (!g_hStart || !IsWindow(g_hStart))
         g_hStart = FindStartButton();
 
     if (!g_hStart) return;
 
+    // If minimized, restore it
+    if (IsIconic(g_hOrbWnd)) {
+        ShowWindow(g_hOrbWnd, SW_RESTORE);
+    }
+
+    // If hidden, show it
+    if (!IsWindowVisible(g_hOrbWnd)) {
+        ShowWindow(g_hOrbWnd, SW_SHOW);
+    }
+
     RECT rc;
     GetWindowRect(g_hStart, &rc);
 
-    int x = rc.left + ((rc.right - rc.left) - g_settings.size) / 2 + g_settings.offsetX;
-    int y = rc.top + ((rc.bottom - rc.top) - g_settings.size) / 2 + g_settings.offsetY;
+    int size, offsetX, offsetY;
+    EnterCriticalSection(&g_cs);
+    size = g_settings.size;
+    offsetX = g_settings.offsetX;
+    offsetY = g_settings.offsetY;
+    LeaveCriticalSection(&g_cs);
 
-    SetWindowPos(g_hOrbWnd, HWND_TOPMOST,
-        x, y, g_settings.size, g_settings.size,
+    // Convert start button screen coordinates to taskbar client coordinates
+    POINT pt = { rc.left, rc.top };
+    ScreenToClient(hTask, &pt);
+
+    int x = pt.x + ((rc.right - rc.left) - size) / 2 + offsetX;
+    int y = pt.y + ((rc.bottom - rc.top) - size) / 2 + offsetY;
+
+    // Use HWND_TOP to keep the child window at the top of the taskbar child z-order
+    SetWindowPos(g_hOrbWnd, HWND_TOP,
+        x, y, size, size,
         SWP_NOACTIVATE | SWP_SHOWWINDOW);
-
-    // Force topmost (prevents taskbar stealing z-order)
-    SetWindowPos(g_hOrbWnd, HWND_TOPMOST,
-        0,0,0,0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 // -------------------- DRAW --------------------
@@ -203,6 +240,62 @@ void UpdateOrbDisplay(HWND hwnd) {
     LeaveCriticalSection(&g_cs);
 }
 
+// Forward declaration
+LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+// -------------------- BACKGROUND THREAD --------------------
+
+DWORD WINAPI OrbThreadProc(LPVOID lpParam) {
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = OrbWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = L"WindhawkOrbStable";
+    RegisterClass(&wc);
+
+    int size;
+    EnterCriticalSection(&g_cs);
+    size = g_settings.size;
+    LeaveCriticalSection(&g_cs);
+
+    // Wait up to 5 seconds for Shell_TrayWnd to be available
+    HWND hTask = NULL;
+    for (int i = 0; i < 100; i++) {
+        hTask = FindWindow(L"Shell_TrayWnd", NULL);
+        if (hTask) break;
+        Sleep(50);
+    }
+
+    g_hOrbWnd = CreateWindowEx(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT,
+        wc.lpszClassName, NULL,
+        WS_CHILD | WS_VISIBLE,
+        0,0,size,size,
+        hTask, NULL, wc.hInstance, NULL);
+
+    if (g_hOrbWnd) {
+        Wh_Log(L"Orb window successfully created as WS_CHILD: %p (parent hTask: %p)", g_hOrbWnd, hTask);
+        
+        BOOL exclude = TRUE;
+        DwmSetWindowAttribute(g_hOrbWnd, DWMWA_EXCLUDED_FROM_PEEK, &exclude, sizeof(exclude));
+
+        SetTimer(g_hOrbWnd, 1, 16, NULL);  // animation
+        SetTimer(g_hOrbWnd, 2, 50, NULL);  // position
+        SetTimer(g_hOrbWnd, 3, 16, NULL);  // state tracking
+
+        PositionOrb();
+        UpdateOrbDisplay(g_hOrbWnd);
+
+        // Message pump
+        MSG msg;
+        while (GetMessage(&msg, NULL, 0, 0)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    return 0;
+}
+
 // -------------------- WINDOW PROC --------------------
 
 LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -212,7 +305,13 @@ LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         if (wp == 1) {
             float target = (g_state >= 1) ? 1.0f : 0.0f;
-            float step = g_settings.speed / 1000.0f;
+            
+            float speed;
+            EnterCriticalSection(&g_cs);
+            speed = (float)g_settings.speed;
+            LeaveCriticalSection(&g_cs);
+            
+            float step = speed / 1000.0f;
 
             if (g_fadeAlpha < target) {
                 g_fadeAlpha += step;
@@ -230,28 +329,128 @@ LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         else if (wp == 3) {
-            if (!g_hStart)
-                g_hStart = FindStartButton();
+            POINT pt;
+            GetCursorPos(&pt);
 
-            if (g_hStart) {
-                POINT pt;
-                GetCursorPos(&pt);
+            bool hover = false;
 
-                RECT rc;
-                GetWindowRect(g_hStart, &rc);
-
-                bool hover = PtInRect(&rc, pt);
-                bool pressed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && hover;
-
-                g_state = pressed ? 2 : (hover ? 1 : 0);
+            // 1. Check if cursor is over our orb window
+            if (g_hOrbWnd) {
+                RECT rcOrb;
+                GetWindowRect(g_hOrbWnd, &rcOrb);
+                if (PtInRect(&rcOrb, pt)) {
+                    hover = true;
+                }
             }
+
+            // 2. Check if cursor is over the original start button (fallback)
+            if (!hover) {
+                if (!g_hStart || !IsWindow(g_hStart))
+                    g_hStart = FindStartButton();
+
+                if (g_hStart) {
+                    RECT rcStart;
+                    GetWindowRect(g_hStart, &rcStart);
+                    if (PtInRect(&rcStart, pt)) {
+                        hover = true;
+                    }
+                }
+            }
+
+            bool pressed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && hover;
+            g_state = pressed ? 2 : (hover ? 1 : 0);
         }
 
+        return 0;
+
+    case WM_WINDOWPOSCHANGING: {
+        if (!g_isUnloading) {
+            WINDOWPOS* lpwpos = (WINDOWPOS*)lp;
+            if (lpwpos->flags & SWP_HIDEWINDOW) {
+                lpwpos->flags &= ~SWP_HIDEWINDOW;
+            }
+            lpwpos->flags |= SWP_SHOWWINDOW;
+        }
+        break;
+    }
+
+    case WM_WINDOWPOSCHANGED: {
+        if (!g_isUnloading) {
+            WINDOWPOS* lpwpos = (WINDOWPOS*)lp;
+            if ((lpwpos->flags & SWP_HIDEWINDOW) || IsIconic(hwnd)) {
+                PostMessage(hwnd, WM_USER + 2, 0, 0);
+            }
+        }
+        break;
+    }
+
+    case WM_SHOWWINDOW: {
+        if (!g_isUnloading && wp == FALSE) {
+            PostMessage(hwnd, WM_USER + 2, 0, 0);
+        }
+        break;
+    }
+
+    case WM_SYSCOMMAND: {
+        if (!g_isUnloading && (wp & 0xFFF0) == SC_MINIMIZE) {
+            PostMessage(hwnd, WM_USER + 2, 0, 0);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_SIZE: {
+        if (!g_isUnloading && wp == SIZE_MINIMIZED) {
+            PostMessage(hwnd, WM_USER + 2, 0, 0);
+            return 0;
+        }
+        break;
+    }
+
+    case 0x031B: { // WM_DWMCLOAKEDCHANGED
+        if (!g_isUnloading) {
+            BOOL cloaked = FALSE;
+            #ifndef DWMWA_CLOAKED
+            #define DWMWA_CLOAKED 14
+            #endif
+            if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) {
+                PostMessage(hwnd, WM_USER + 2, 0, 0);
+            }
+        }
+        break;
+    }
+
+    case WM_USER + 1: // WM_SETTINGS_CHANGED
+        PositionOrb();
+        UpdateOrbDisplay(hwnd);
+        return 0;
+
+    case WM_USER + 2: // Force show / restore
+        if (!g_isUnloading) {
+            if (IsIconic(hwnd)) {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            ShowWindow(hwnd, SW_SHOW);
+            PositionOrb();
+            UpdateOrbDisplay(hwnd);
+        }
         return 0;
 
     case WM_SETCURSOR:
         SetCursor(LoadCursor(NULL, IDC_HAND));
         return TRUE;
+
+    case WM_CLOSE:
+        KillTimer(hwnd, 1);
+        KillTimer(hwnd, 2);
+        KillTimer(hwnd, 3);
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        g_hOrbWnd = NULL;
+        PostQuitMessage(0);
+        return 0;
     }
 
     return DefWindowProc(hwnd, msg, wp, lp);
@@ -274,27 +473,8 @@ BOOL Wh_ModInit() {
 
     LoadImages();
 
-    WNDCLASS wc = {};
-    wc.lpfnWndProc = OrbWndProc;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = L"WindhawkOrbStable";
-    RegisterClass(&wc);
-
-    g_hOrbWnd = CreateWindowEx(
-        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
-        wc.lpszClassName, NULL,
-        WS_POPUP,
-        0,0,g_settings.size,g_settings.size,
-        NULL,NULL,wc.hInstance,NULL);
-
-    if (g_hOrbWnd) {
-        SetTimer(g_hOrbWnd, 1, 16, NULL);  // animation
-        SetTimer(g_hOrbWnd, 2, 50, NULL);  // position
-        SetTimer(g_hOrbWnd, 3, 16, NULL);  // state tracking
-
-        PositionOrb();
-        UpdateOrbDisplay(g_hOrbWnd);
-    }
+    // Create the background thread
+    g_hOrbThread = CreateThread(NULL, 0, OrbThreadProc, NULL, 0, NULL);
 
     return TRUE;
 }
@@ -305,11 +485,16 @@ void Wh_ModUninit() {
     g_isUnloading = true;
 
     if (g_hOrbWnd) {
-        KillTimer(g_hOrbWnd, 1);
-        KillTimer(g_hOrbWnd, 2);
-        KillTimer(g_hOrbWnd, 3);
-        DestroyWindow(g_hOrbWnd);
+        PostMessage(g_hOrbWnd, WM_CLOSE, 0, 0);
     }
+
+    if (g_hOrbThread) {
+        WaitForSingleObject(g_hOrbThread, 2000);
+        CloseHandle(g_hOrbThread);
+        g_hOrbThread = NULL;
+    }
+
+    UnregisterClass(L"WindhawkOrbStable", GetModuleHandle(NULL));
 
     CleanImages();
 
@@ -322,17 +507,18 @@ void Wh_ModUninit() {
 // -------------------- SETTINGS --------------------
 
 void Wh_ModSettingsChanged() {
+    EnterCriticalSection(&g_cs);
     g_settings.size = Wh_GetIntSetting(L"orbSize");
     g_settings.speed = Wh_GetIntSetting(L"animSpeed");
     g_settings.minOpacity = Wh_GetIntSetting(L"minOpacity");
     g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
     g_settings.offsetX = Wh_GetIntSetting(L"offsetX");
     g_settings.offsetY = Wh_GetIntSetting(L"offsetY");
+    LeaveCriticalSection(&g_cs);
 
     LoadImages();
 
     if (g_hOrbWnd) {
-        PositionOrb();
-        UpdateOrbDisplay(g_hOrbWnd);
+        PostMessage(g_hOrbWnd, WM_USER + 1, 0, 0);
     }
 }
