@@ -1,7 +1,7 @@
 // ==WindhawkMod==
 // @id              xaml-video-injector
 // @name            XAML-Video-Injector
-// @description     Injects a video player into taskbar, start button, start menu, and custom XAML paths, as defined by the user.
+// @description     Injects a video player into taskbar, start button, start menu, and custom per-process XAML paths, as defined by the user.
 // @version         0.9
 // @author          bbmaster123 / Gemini
 // @include         explorer.exe
