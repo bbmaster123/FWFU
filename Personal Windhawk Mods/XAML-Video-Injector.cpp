@@ -155,6 +155,7 @@ winrt::event_token g_visibilityChangedToken{};
 struct TrackedGridRef {
     winrt::weak_ref<Controls::Grid> ref;
     winrt::weak_ref<winrt::Windows::Media::Playback::MediaPlayer> playerRef;
+    std::wstring uniqueName;
 };
 
 struct InjectionSettings {
@@ -371,7 +372,7 @@ void CreateAndInjectVideo(Grid targetGrid, std::wstring_view uniqueName) {
             }
         }
         if (!found) {
-            g_trackedGrids.push_back({ winrt::make_weak(targetGrid), winrt::make_weak(mediaPlayer) });
+            g_trackedGrids.push_back({ winrt::make_weak(targetGrid), winrt::make_weak(mediaPlayer), std::wstring(uniqueName) });
         }
     }
 
@@ -563,6 +564,9 @@ int WINAPI TaskbarFrame_MeasureOverride_Hook(void* pThis, winrt::Windows::Founda
     g_hookCallCounter++;
     int ret = TaskbarFrame_MeasureOverride_Original(pThis, size, resultSize);
     g_pendingMeasureOverride = false;
+    if (auto elem = GetFrameworkElementFromNative(pThis)) {
+        ScheduleScanAsync(elem);
+    }
     g_hookCallCounter--;
     return ret;
 }
@@ -651,17 +655,38 @@ void CALLBACK PerformanceTimerProc(HWND, UINT, UINT_PTR, DWORD) {
         }
     }
 
+    HWND hLock = FindWindowW(L"LockScreenClass", nullptr);
+    if (hLock && IsWindowVisible(hLock)) {
+        isCovered = true;
+    }
+
     std::lock_guard<std::mutex> lock(g_gridMutex);
     for (auto& t : g_trackedGrids) {
         if (auto grid = t.ref.get()) {
             if (auto player = t.playerRef.get()) {
-                grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [player, isCovered]() {
-                    auto state = player.PlaybackSession().PlaybackState();
-                    if (isCovered) {
-                        if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Playing) player.Pause();
-                    } else {
-                        if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Paused) player.Play();
-                    }
+                std::wstring uName = t.uniqueName;
+                grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [grid, player, isCovered, uName]() {
+                    try {
+                        bool pauseThis = isCovered;
+                        if (uName == L"StartMenuVideoGrid") {
+                            if (grid.Visibility() != Visibility::Visible) {
+                                pauseThis = true;
+                            } else {
+                                HWND hStart = FindWindowW(L"XYWidgetHostWindow", nullptr);
+                                if (!hStart) hStart = FindWindowW(L"Windows.UI.Core.CoreWindow", L"Start");
+                                if (hStart && !IsWindowVisible(hStart)) {
+                                    pauseThis = true;
+                                }
+                            }
+                        }
+
+                        auto state = player.PlaybackSession().PlaybackState();
+                        if (pauseThis) {
+                            if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Playing) player.Pause();
+                        } else {
+                            if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Paused) player.Play();
+                        }
+                    } catch (...) {}
                 });
             }
         }
@@ -684,6 +709,14 @@ FrameworkElement FindChildRecursive(DependencyObject parent, std::function<bool(
 
 void InjectStartMenuVideo() {
     if (!Wh_GetIntSetting(L"injectStartMenu")) return;
+
+    WCHAR processName[MAX_PATH];
+    GetModuleFileName(nullptr, processName, MAX_PATH);
+    std::wstring proc(processName);
+    std::transform(proc.begin(), proc.end(), proc.begin(), ::towlower);
+    if (proc.find(L"searchhost.exe") != std::wstring::npos || proc.find(L"searchapp.exe") != std::wstring::npos) {
+        return;
+    }
 
     auto window = Window::Current();
     if (!window) return;
@@ -873,18 +906,18 @@ void Wh_ModSettingsChanged() {
         std::lock_guard<std::mutex> lock(g_gridMutex);
         for (auto& tracked : g_trackedGrids) {
             if (auto grid = tracked.ref.get()) {
-                grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [grid]() {
+                std::wstring uName = tracked.uniqueName;
+                grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [grid, uName]() {
                     RemoveInjectedFromGrid(grid);
-                    // Re-inject based on name
-                    std::wstring name(grid.Name());
-                    if (name == c_InjectedControlName) {
+                    // Re-inject based on tracked name
+                    if (uName == c_InjectedControlName) {
                         if (Wh_GetIntSetting(L"injectTaskbar")) CreateAndInjectVideo(grid, c_InjectedControlName);
-                    } else if (name == L"StartButtonVideoGrid") {
+                    } else if (uName == L"StartButtonVideoGrid") {
                         if (Wh_GetIntSetting(L"injectStartButton")) CreateAndInjectVideo(grid, L"StartButtonVideoGrid");
-                    } else if (name == L"StartMenuVideoGrid") {
+                    } else if (uName == L"StartMenuVideoGrid") {
                         if (Wh_GetIntSetting(L"injectStartMenu")) CreateAndInjectVideo(grid, L"StartMenuVideoGrid");
-                    } else if (name.find(L"CustomVideoGrid_") == 0) {
-                        CreateAndInjectVideo(grid, name);
+                    } else if (uName.find(L"CustomVideoGrid_") == 0) {
+                        CreateAndInjectVideo(grid, uName);
                     }
                 });
             }
