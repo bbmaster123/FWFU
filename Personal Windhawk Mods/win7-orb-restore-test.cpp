@@ -11,9 +11,9 @@
 
 // ==WindhawkModSettings==
 /*
-- orbNormal: "C:\\Users\\Brandon\\Desktop\\Junk\\orb\\orb.png"
-- orbHover: "C:\\Users\\Brandon\\Desktop\\Junk\\orb\\orbHover.png"
-- orbPressed: "C:\\Users\\Brandon\\Desktop\\Junk\\orb\\orbPressed.png"
+- orbNormal: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orb.png"
+- orbHover: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbHover.png"
+- orbPressed: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbPressed.png"
 - orbSize: 72
 - animSpeed: 15
 - minOpacity: 255
