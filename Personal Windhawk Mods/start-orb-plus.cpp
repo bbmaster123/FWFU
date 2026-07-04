@@ -1,7 +1,7 @@
 // ==WindhawkMod==
 // @id             start-orb-plus
 // @name           Start Orb Plus
-// @description    Stable Windows 7 style Start Orb overlay
+// @description    Windows 7 style Start Orb overlay
 // @version        1.0.0
 // @author         Bbmaster123/AI
 // @include        explorer.exe
