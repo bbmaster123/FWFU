@@ -2,7 +2,7 @@
 // @id              xaml-video-injector
 // @name            XAML-Video-Injector
 // @description     Injects a video player into taskbar, start button, start menu, and custom XAML paths, as defined by the user.
-// @version         0.8
+// @version         0.9
 // @author          bbmaster123 / Gemini
 // @include         explorer.exe
 // @include         StartMenuExperienceHost.exe
