@@ -2,7 +2,7 @@
 // @id              wh-weather
 // @name            Windhawk Weather
 // @description     A lightweight XAML taskbar weather widget that injects directly into the Windows Taskbar UI Tree.
-// @version         1.1.2
+// @version         1.1.0
 // @author          Gemini
 // @include         explorer.exe
 // @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion -lcomctl32 -ld2d1 -ldwrite
@@ -585,12 +585,16 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         bgColor.A = 1; // Prevent fully transparent black bug on Win10 XAML islands
         if (g_useAcrylic) {
             try {
-                AcrylicBrush acrylic;
-                acrylic.BackgroundSource(AcrylicBackgroundSource::HostBackdrop);
-                acrylic.TintColor(bgColor);
-                acrylic.TintOpacity(g_acrylicOpacity / 100.0);
-                acrylic.FallbackColor(bgColor);
-                rootGrid.Background(acrylic);
+                if (IsWindows11()) {
+                    AcrylicBrush acrylic;
+                    acrylic.BackgroundSource(AcrylicBackgroundSource::HostBackdrop);
+                    acrylic.TintColor(bgColor);
+                    acrylic.TintOpacity(g_acrylicOpacity / 100.0);
+                    acrylic.FallbackColor(bgColor);
+                    rootGrid.Background(acrylic);
+                } else {
+                    rootGrid.Background(SolidColorBrush{winrt::Windows::UI::Colors::Transparent()});
+                }
             } catch (...) {
                 rootGrid.Background(SolidColorBrush{bgColor});
             }
@@ -669,12 +673,16 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         if (!g_useAcrylic)
             throw std::exception();
 
-        AcrylicBrush acrylic;
-        acrylic.BackgroundSource(AcrylicBackgroundSource::HostBackdrop);
-        acrylic.TintColor(bgColor);
-        acrylic.TintOpacity(g_acrylicOpacity / 100.0);
-        acrylic.FallbackColor(bgColor);
-        rootGrid.Background(acrylic);
+        if (IsWindows11()) {
+            AcrylicBrush acrylic;
+            acrylic.BackgroundSource(AcrylicBackgroundSource::HostBackdrop);
+            acrylic.TintColor(bgColor);
+            acrylic.TintOpacity(g_acrylicOpacity / 100.0);
+            acrylic.FallbackColor(bgColor);
+            rootGrid.Background(acrylic);
+        } else {
+            rootGrid.Background(SolidColorBrush{winrt::Windows::UI::Colors::Transparent()});
+        }
     } catch (...) {
         rootGrid.Background(SolidColorBrush{bgColor});
     }
@@ -2673,7 +2681,8 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
             elapsedMs += 1000;
         }
     }
-
+    
+    winrt::uninit_apartment();
     return 0;
 }
 
@@ -3417,16 +3426,48 @@ winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager g_win10XamlManager = nullp
 winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource g_win10XamlSource = nullptr;
 HWND g_win10PopupHwnd = nullptr;
 HWND g_win10XamlSourceHwnd = nullptr;
+DWORD g_lastHideTickCount = 0;
+bool g_popupWasVisibleOnLButtonDown = false;
+
+void HideWin10Popup(HWND hWnd) {
+    if (hWnd && IsWindow(hWnd)) {
+        ShowWindow(hWnd, SW_HIDE);
+    }
+}
 
 LRESULT CALLBACK Win10PopupWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_ACTIVATE) {
         if (LOWORD(wParam) == WA_INACTIVE) {
             HWND hActive = (HWND)lParam;
             if (hActive != hWnd && hActive != g_win10XamlSourceHwnd && !IsChild(hWnd, hActive)) {
-                ShowWindow(hWnd, SW_HIDE);
+                g_lastHideTickCount = GetTickCount();
+                HideWin10Popup(hWnd);
                 return 0;
             }
         }
+    } else if (uMsg == (WM_USER + 4246)) {
+        if (g_win10XamlSource) {
+            try { 
+                IDesktopWindowXamlSourceNative* native = nullptr;
+                IUnknown* pUnk = (IUnknown*)winrt::get_abi(g_win10XamlSource);
+                if (pUnk && pUnk->QueryInterface(IID_IDesktopWindowXamlSourceNative, (void**)&native) == S_OK) {
+                    HWND hXamlWnd = NULL;
+                    native->get_WindowHandle(&hXamlWnd);
+                    if (hXamlWnd && IsWindow(hXamlWnd)) {
+                        DestroyWindow(hXamlWnd);
+                    }
+                    native->Release();
+                }
+            } catch (...) {}
+            winrt::detach_abi(g_win10XamlSource);
+            g_win10XamlSource = nullptr;
+        }
+        if (g_win10XamlManager) {
+            winrt::detach_abi(g_win10XamlManager);
+            g_win10XamlManager = nullptr;
+        }
+        DestroyWindow(hWnd);
+        return 0;
     } else if (uMsg == WM_SIZE) {
         HWND hXAML = (HWND)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
         if (hXAML) {
@@ -3435,7 +3476,10 @@ LRESULT CALLBACK Win10PopupWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     } else if (uMsg == WM_ERASEBKGND) {
         return 1;
     } else if (uMsg == WM_DESTROY) {
-        g_win10XamlSource = nullptr;
+        if (g_win10XamlSource) {
+            winrt::detach_abi(g_win10XamlSource);
+            g_win10XamlSource = nullptr;
+        }
         g_win10XamlSourceHwnd = NULL;
         g_win10PopupHwnd = NULL;
     }
@@ -3493,17 +3537,64 @@ struct WINDOWCOMPOSITIONATTRIBDATA_WEATHER {
 
 typedef BOOL (WINAPI *SetWindowCompositionAttribute_t)(HWND, WINDOWCOMPOSITIONATTRIBDATA_WEATHER*);
 
+HANDLE g_hXamlActCtx = INVALID_HANDLE_VALUE;
+bool g_xamlActCtxInitialized = false;
+
+struct XamlActCtxScope {
+    ULONG_PTR cookie = 0;
+    
+    XamlActCtxScope() {
+        if (!g_xamlActCtxInitialized) {
+            g_xamlActCtxInitialized = true;
+            wchar_t tempPath[MAX_PATH];
+            if (GetTempPathW(MAX_PATH, tempPath)) {
+                wchar_t manifestPath[MAX_PATH];
+                swprintf_s(manifestPath, L"%sWhWeatherXaml.manifest", tempPath);
+                
+                FILE* f = _wfopen(manifestPath, L"w");
+                if (f) {
+                    fputs("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                          "<assembly manifestVersion=\"1.0\" xmlns=\"urn:schemas-microsoft-com:asm.v1\">\n"
+                          "  <assemblyIdentity version=\"1.0.0.0\" name=\"WhWeather.App\" type=\"win32\"/>\n"
+                          "  <compatibility xmlns=\"urn:schemas-microsoft-com:compatibility.v1\">\n"
+                          "    <application>\n"
+                          "      <maxversiontested Id=\"10.0.18362.0\"/>\n"
+                          "      <supportedOS Id=\"{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}\" />\n"
+                          "    </application>\n"
+                          "  </compatibility>\n"
+                          "</assembly>", f);
+                    fclose(f);
+                    
+                    ACTCTXW actCtx = { sizeof(actCtx) };
+                    actCtx.lpSource = manifestPath;
+                    g_hXamlActCtx = CreateActCtxW(&actCtx);
+                }
+            }
+        }
+        
+        if (g_hXamlActCtx != INVALID_HANDLE_VALUE) {
+            ActivateActCtx(g_hXamlActCtx, &cookie);
+        }
+    }
+    
+    ~XamlActCtxScope() {
+        if (cookie != 0) {
+            DeactivateActCtx(0, cookie);
+        }
+    }
+};
+
 void ShowWin10ForecastPopup(HWND hClock) {
     try {
+        XamlActCtxScope actCtxScope;
+        
         RegisterWin10PopupClass();
 
         if (!g_win10XamlManager) {
             try {
                 g_win10XamlManager = winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
             } catch (...) {
-                if (g_debugLogs) {
-                    Wh_Log(L"[Wh_WeatherHost] Note: WindowsXamlManager::InitializeForCurrentThread threw an exception (probably already initialized on this thread), proceeding safely.");
-                }
+                // Ignore if already initialized on this thread by explorer
             }
         }
 
@@ -3590,10 +3681,10 @@ void ShowWin10ForecastPopup(HWND hClock) {
             if (!IsWindows11() && g_useAcrylic) {
                 dwExStyle |= WS_EX_LAYERED | 0x00200000L; // WS_EX_NOREDIRECTIONBITMAP
             }
-            HWND hOwner = FindWindowW(L"Shell_TrayWnd", NULL);
+            HWND hOwner = NULL; // FindWindowW(L"Shell_TrayWnd", NULL);
             g_win10PopupHwnd = CreateWindowExW(
                 dwExStyle,
-                L"WhWin10ForecastPopupClass", L"Weather Forecast",
+                L"WhWin10ForecastPopupClass", L"",
                 WS_POPUP,
                 (int)offsetX, (int)offsetY, physicalWidth, physicalHeight,
                 hOwner, NULL, GetModuleHandleW(NULL), NULL
@@ -3678,20 +3769,25 @@ void ShowWin10ForecastPopup(HWND hClock) {
         }
 
         if (g_win10PopupHwnd && g_win10XamlSource) {
+            if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Reusing existing popup HWND and XamlSource");
             Grid rootGrid;
             g_selectedDate = L"";
             g_graphScrollOffset = -1.0;
             g_selectedGraphTab = 0;
+            if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Populating UI");
             PopulateForecastUI(rootGrid, g_cachedCondition, g_cachedIcon, g_cachedTemp);
 
             rootGrid.Width(panelWidth);
             rootGrid.Height(panelHeight);
 
+            if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Setting content");
             g_win10XamlSource.Content(rootGrid);
 
             if (g_win10XamlSourceHwnd) {
                 ShowWindow(g_win10XamlSourceHwnd, SW_SHOW);
             }
+            if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Showing window");
+            SetWindowPos(g_win10PopupHwnd, NULL, (int)offsetX, (int)offsetY, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
             ShowWindow(g_win10PopupHwnd, SW_SHOW);
             SetForegroundWindow(g_win10PopupHwnd);
             RedrawWindow(g_win10PopupHwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
@@ -3704,17 +3800,14 @@ void ShowWin10ForecastPopup(HWND hClock) {
         if (g_debugLogs) {
             Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. WinRT Exception: %s (0x%08X). Falling back to browser...", e.message().c_str(), e.code().value);
         }
-        throw;
     } catch (const std::exception& e) {
         if (g_debugLogs) {
             Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. Std Exception: %S. Falling back to browser...", e.what());
         }
-        throw;
     } catch (...) {
         if (g_debugLogs) {
             Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. Unknown Exception. Falling back to browser...");
         }
-        throw;
     }
 }
 
@@ -3769,9 +3862,12 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
         if (wParam == 4242) {
             try {
                 if (g_win10PopupHwnd && IsWindowVisible(g_win10PopupHwnd)) {
-                    ShowWindow(g_win10PopupHwnd, SW_HIDE);
+                    g_lastHideTickCount = GetTickCount();
+                    HideWin10Popup(g_win10PopupHwnd);
                 } else {
-                    ShowWin10ForecastPopup(hWnd);
+                    if (GetTickCount() - g_lastHideTickCount > 250) {
+                        ShowWin10ForecastPopup(hWnd);
+                    }
                 }
             } catch (...) {}
             return 0;
@@ -3792,10 +3888,20 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
 
     if (uMsg == (WM_USER + 4242)) {
         try {
-            if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd) && IsWindowVisible(g_win10PopupHwnd)) {
-                ShowWindow(g_win10PopupHwnd, SW_HIDE);
+            if (wParam == 1) {
+                if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd)) {
+                    g_lastHideTickCount = GetTickCount();
+                    HideWin10Popup(g_win10PopupHwnd);
+                }
             } else {
-                ShowWin10ForecastPopup(hWnd);
+                if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd) && IsWindowVisible(g_win10PopupHwnd)) {
+                    g_lastHideTickCount = GetTickCount();
+                    HideWin10Popup(g_win10PopupHwnd);
+                } else {
+                    if (GetTickCount() - g_lastHideTickCount > 250) {
+                        ShowWin10ForecastPopup(hWnd);
+                    }
+                }
             }
         } catch (...) {}
         return 0;
@@ -4023,6 +4129,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             int weatherWidth = g_currentAddedWeatherWidth;
 
             if (pos >= -weatherWidth && pos < 0) {
+                g_popupWasVisibleOnLButtonDown = (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd) && IsWindowVisible(g_win10PopupHwnd));
                 g_win10WeatherPressed = true;
                 InvalidateClockParentRegion(hWnd);
                 RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
@@ -4044,7 +4151,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             if (wasPressed && pos >= -weatherWidth && pos < 0) {
                 InvalidateClockParentRegion(hWnd);
                 RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
-                PostMessageW(hWnd, WM_USER + 4242, 0, 0);
+                PostMessageW(hWnd, WM_USER + 4242, g_popupWasVisibleOnLButtonDown ? 1 : 0, 0);
                 return 0;
             }
             return DefSubclassProc(hWnd, uMsg, wParam, lParam);
@@ -4344,7 +4451,7 @@ BOOL Wh_ModInit() {
 
     // Watchdog thread for rapid, automated taskbar subclass injection/maintenance
     g_hWatchdogThread =
-        CreateThread(NULL, 0, SubclassWatchdogThread, NULL, 0, NULL);
+        g_hWatchdogThread = CreateThread(NULL, 0, SubclassWatchdogThread, NULL, 0, NULL);
 
     // Initial check if taskbar module is loaded or intercept via library load
     // hooks
@@ -4408,20 +4515,15 @@ void Wh_ModUninit() {
     }
     LeaveCriticalSection(&g_subclassLock);
 
-    // 2. Clean up XAML and its child windows directly
+    // 2. Clean up XAML and its child windows directly on the UI thread
+    if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd)) {
+        SendMessageW(g_win10PopupHwnd, WM_USER + 4246, 0, 0);
+        g_win10PopupHwnd = nullptr;
+    }
+    
+    // Safety fallback in case the window didn't clean them up
     if (g_win10XamlSource) {
-        try {
-            IDesktopWindowXamlSourceNative* native = nullptr;
-            IUnknown* pUnk = (IUnknown*)winrt::get_abi(g_win10XamlSource);
-            if (pUnk && pUnk->QueryInterface(IID_IDesktopWindowXamlSourceNative, (void**)&native) == S_OK) {
-                HWND hXamlWnd = NULL;
-                native->get_WindowHandle(&hXamlWnd);
-                if (hXamlWnd && IsWindow(hXamlWnd)) {
-                    DestroyWindow(hXamlWnd);
-                }
-                native->Release();
-            }
-        } catch (...) {}
+        winrt::detach_abi(g_win10XamlSource);
         g_win10XamlSource = nullptr;
     }
     if (g_win10XamlManager) {
@@ -4447,12 +4549,12 @@ void Wh_ModUninit() {
         g_hForceUpdateEvent = NULL;
     }
 
-    // 3. Close the popup window on the UI thread
-    if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd)) {
-        DestroyWindow(g_win10PopupHwnd);
-        g_win10PopupHwnd = NULL;
+    if (g_hXamlActCtx != INVALID_HANDLE_VALUE) {
+        ReleaseActCtx(g_hXamlActCtx);
+        g_hXamlActCtx = INVALID_HANDLE_VALUE;
+        g_xamlActCtxInitialized = false;
     }
-    
+
     // Give time for window destruction messages to process before unregistering the class
     Sleep(50);
     UnregisterClassW(L"WhWin10ForecastPopupClass", GetModuleHandleW(NULL));
