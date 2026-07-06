@@ -14,7 +14,8 @@
 - orbNormal: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orb.png"
 - orbHover: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbHover.png"
 - orbPressed: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbPressed.png"
-- orbSize: 72
+- orbSizeX: 72
+- orbSizeY: 72
 - animSpeed: 15
 - minOpacity: 255
 - maxOpacity: 255
@@ -30,7 +31,8 @@
 using namespace Gdiplus;
 
 struct {
-    int size;
+    int sizeX;
+    int sizeY;
     int speed;
     int minOpacity;
     int maxOpacity;
@@ -146,9 +148,10 @@ void PositionOrb() {
     RECT rc;
     GetWindowRect(g_hStart, &rc);
 
-    int size, offsetX, offsetY;
+    int sizeX, sizeY, offsetX, offsetY;
     EnterCriticalSection(&g_cs);
-    size = g_settings.size;
+    sizeX = g_settings.sizeX;
+    sizeY = g_settings.sizeY;
     offsetX = g_settings.offsetX;
     offsetY = g_settings.offsetY;
     LeaveCriticalSection(&g_cs);
@@ -157,12 +160,12 @@ void PositionOrb() {
     POINT pt = { rc.left, rc.top };
     ScreenToClient(hTask, &pt);
 
-    int x = pt.x + ((rc.right - rc.left) - size) / 2 + offsetX;
-    int y = pt.y + ((rc.bottom - rc.top) - size) / 2 + offsetY;
+    int x = pt.x + ((rc.right - rc.left) - sizeX) / 2 + offsetX;
+    int y = pt.y + ((rc.bottom - rc.top) - sizeY) / 2 + offsetY;
 
     // Use HWND_TOP to keep the child window at the top of the taskbar child z-order
     SetWindowPos(g_hOrbWnd, HWND_TOP,
-        x, y, size, size,
+        x, y, sizeX, sizeY,
         SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
@@ -178,8 +181,8 @@ void UpdateOrbDisplay(HWND hwnd) {
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = g_settings.size;
-    bmi.bmiHeader.biHeight = -g_settings.size;
+    bmi.bmiHeader.biWidth = g_settings.sizeX;
+    bmi.bmiHeader.biHeight = -g_settings.sizeY;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
 
@@ -193,7 +196,7 @@ void UpdateOrbDisplay(HWND hwnd) {
         g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.Clear(Color(0,0,0,0));
 
-        RectF rect(0,0,(REAL)g_settings.size,(REAL)g_settings.size);
+        RectF rect(0,0,(REAL)g_settings.sizeX,(REAL)g_settings.sizeY);
 
         Image* img = g_imgNormal;
 
@@ -214,8 +217,8 @@ void UpdateOrbDisplay(HWND hwnd) {
             attr.SetColorMatrix(&matrix);
 
             g.DrawImage(g_imgHover, rect, 0,0,
-                g_imgHover->GetWidth(),
-                g_imgHover->GetHeight(),
+                (REAL)g_imgHover->GetWidth(),
+                (REAL)g_imgHover->GetHeight(),
                 UnitPixel, &attr);
         }
 
@@ -225,7 +228,7 @@ void UpdateOrbDisplay(HWND hwnd) {
         BLENDFUNCTION blend = {AC_SRC_OVER, 0, (BYTE)alpha, AC_SRC_ALPHA};
 
         POINT pt = {0,0};
-        SIZE sz = {g_settings.size, g_settings.size};
+        SIZE sz = {g_settings.sizeX, g_settings.sizeY};
 
         UpdateLayeredWindow(hwnd, hdcScreen, NULL, &sz,
             hdcMem, &pt, 0, &blend, ULW_ALPHA);
@@ -252,9 +255,10 @@ DWORD WINAPI OrbThreadProc(LPVOID lpParam) {
     wc.lpszClassName = L"WindhawkOrbStable";
     RegisterClass(&wc);
 
-    int size;
+    int sizeX, sizeY;
     EnterCriticalSection(&g_cs);
-    size = g_settings.size;
+    sizeX = g_settings.sizeX;
+    sizeY = g_settings.sizeY;
     LeaveCriticalSection(&g_cs);
 
     // Wait up to 5 seconds for Shell_TrayWnd to be available
@@ -269,7 +273,7 @@ DWORD WINAPI OrbThreadProc(LPVOID lpParam) {
         WS_EX_LAYERED | WS_EX_TRANSPARENT,
         wc.lpszClassName, NULL,
         WS_CHILD | WS_VISIBLE,
-        0,0,size,size,
+        0,0,sizeX,sizeY,
         hTask, NULL, wc.hInstance, NULL);
 
     if (g_hOrbWnd) {
@@ -464,7 +468,8 @@ BOOL Wh_ModInit() {
     GdiplusStartupInput gdiInput;
     GdiplusStartup(&g_gdiToken, &gdiInput, NULL);
 
-    g_settings.size = Wh_GetIntSetting(L"orbSize");
+    g_settings.sizeX = Wh_GetIntSetting(L"orbSizeX");
+    g_settings.sizeY = Wh_GetIntSetting(L"orbSizeY");
     g_settings.speed = Wh_GetIntSetting(L"animSpeed");
     g_settings.minOpacity = Wh_GetIntSetting(L"minOpacity");
     g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
@@ -508,7 +513,8 @@ void Wh_ModUninit() {
 
 void Wh_ModSettingsChanged() {
     EnterCriticalSection(&g_cs);
-    g_settings.size = Wh_GetIntSetting(L"orbSize");
+    g_settings.sizeX = Wh_GetIntSetting(L"orbSizeX");
+    g_settings.sizeY = Wh_GetIntSetting(L"orbSizeY");
     g_settings.speed = Wh_GetIntSetting(L"animSpeed");
     g_settings.minOpacity = Wh_GetIntSetting(L"minOpacity");
     g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
