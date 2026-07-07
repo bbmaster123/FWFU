@@ -2,11 +2,11 @@
 // @id             start-orb-restorer
 // @name           Start Button Orb +
 // @description    Stable Windows 7 style Start Orb overlay
-// @version        0.6
+// @version        0.7
 // @author         Bbmaster123/AI
 // @include        explorer.exe
 // @architecture   x86-64
-// @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi
+// @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi -lcomctl32 -lole32 -loleaut32 -lruntimeobject
 // ==/WindhawkMod==
 
 // ==WindhawkModSettings==
@@ -21,15 +21,28 @@
 - maxOpacity: 255
 - offsetX: 0
 - offsetY: 0
-- hideDefault: 1
+- hideDefault: false
+  $name: Hide Default Start Button Icon
+  $description: Keeps the button fully clickable but hides the original icon drawing. Works perfectly on Windows 10 and 11.
 */
 // ==/WindhawkModSettings==
 
 #include <windows.h>
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
+#include <windhawk_utils.h>
+#include <atomic>
+
+#undef GetCurrentTime
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.UI.Xaml.Automation.h>
+#include <winrt/Windows.UI.Xaml.Media.h>
+#include <winrt/Windows.UI.Xaml.Shapes.h>
+#include <winrt/Windows.UI.Xaml.h>
 
 using namespace Gdiplus;
+using namespace winrt::Windows::UI::Xaml;
 
 struct {
     int sizeX;
@@ -39,7 +52,7 @@ struct {
     int maxOpacity;
     int offsetX;
     int offsetY;
-    int hideDefault;
+    bool hideDefault;
 } g_settings;
 
 HWND g_hOrbWnd = NULL;
@@ -58,6 +71,293 @@ int g_state = 0;
 bool g_isUnloading = false;
 
 CRITICAL_SECTION g_cs;
+
+// -------------------- WINDOWS 11 START BUTTON HIDING --------------------
+bool g_isWindows11 = false;
+std::atomic<bool> g_taskbarViewDllLoaded;
+std::atomic<bool> g_unloading_win11;
+thread_local bool g_inArrangeOverride;
+
+void* CTaskBand_ITaskListWndSite_vftable;
+void* CSecondaryTaskBand_ITaskListWndSite_vftable;
+
+using CTaskBand_GetTaskbarHost_t = void*(WINAPI*)(void* pThis, void** result);
+CTaskBand_GetTaskbarHost_t CTaskBand_GetTaskbarHost_Original;
+void* TaskbarHost_FrameHeight_Original;
+
+using CSecondaryTaskBand_GetTaskbarHost_t = void*(WINAPI*)(void* pThis, void** result);
+CSecondaryTaskBand_GetTaskbarHost_t CSecondaryTaskBand_GetTaskbarHost_Original;
+
+using std__Ref_count_base__Decref_t = void(WINAPI*)(void* pThis);
+std__Ref_count_base__Decref_t std__Ref_count_base__Decref_Original;
+
+template <typename F>
+FrameworkElement EnumChildElements(FrameworkElement element, F callback) {
+    int count = Media::VisualTreeHelper::GetChildrenCount(element);
+    for (int i = 0; i < count; i++) {
+        auto child = Media::VisualTreeHelper::GetChild(element, i)
+                         .try_as<FrameworkElement>();
+        if (child && callback(child))
+            return child;
+    }
+    return nullptr;
+}
+
+FrameworkElement FindChildByName(FrameworkElement element, PCWSTR name) {
+    return EnumChildElements(element, [name](FrameworkElement child) {
+        return child.Name() == name;
+    });
+}
+
+void CollapseStartButtonIcon(FrameworkElement element, bool hide) {
+    if (!element) return;
+
+    if (winrt::get_class_name(element) == L"Microsoft.UI.Xaml.Controls.AnimatedVisualPlayer") {
+        element.Visibility(hide ? Visibility::Collapsed : Visibility::Visible);
+        return;
+    }
+
+    int count = Media::VisualTreeHelper::GetChildrenCount(element);
+    for (int i = 0; i < count; i++) {
+        auto child = Media::VisualTreeHelper::GetChild(element, i)
+                         .try_as<FrameworkElement>();
+        if (child) {
+            CollapseStartButtonIcon(child, hide);
+        }
+    }
+}
+
+bool ApplyStyle(XamlRoot xamlRoot) {
+    FrameworkElement child =
+        xamlRoot.Content().try_as<FrameworkElement>();
+    if (!child ||
+        !(child = EnumChildElements(child, [](FrameworkElement c) {
+            return winrt::get_class_name(c) == L"Taskbar.TaskbarFrame";
+        })) ||
+        !(child = FindChildByName(child, L"RootGrid")) ||
+        !(child = FindChildByName(child, L"TaskbarFrameRepeater")))
+        return false;
+
+    auto startButton = EnumChildElements(child, [](FrameworkElement c) {
+        return winrt::get_class_name(c) ==
+                   L"Taskbar.ExperienceToggleButton" &&
+               Automation::AutomationProperties::GetAutomationId(c) ==
+                   L"StartButton";
+    });
+
+    if (startButton) {
+        bool hide;
+        EnterCriticalSection(&g_cs);
+        hide = g_settings.hideDefault;
+        LeaveCriticalSection(&g_cs);
+
+        CollapseStartButtonIcon(startButton, hide || g_unloading_win11);
+    }
+    return true;
+}
+
+XamlRoot XamlRootFromTaskbarHostSharedPtr(void* taskbarHostSharedPtr[2]) {
+    if (!taskbarHostSharedPtr[0] && !taskbarHostSharedPtr[1])
+        return nullptr;
+    size_t offset = 0x48;
+    const BYTE* b = (const BYTE*)TaskbarHost_FrameHeight_Original;
+    if (b[0] == 0x48 && b[1] == 0x83 && b[2] == 0xEC && b[4] == 0x48 &&
+        b[5] == 0x83 && b[6] == 0xC1 && b[7] <= 0x7F)
+        offset = b[7];
+    auto* unk = *(IUnknown**)((BYTE*)taskbarHostSharedPtr[0] + offset);
+    FrameworkElement fe = nullptr;
+    unk->QueryInterface(winrt::guid_of<FrameworkElement>(),
+                        winrt::put_abi(fe));
+    auto result = fe ? fe.XamlRoot() : nullptr;
+    std__Ref_count_base__Decref_Original(taskbarHostSharedPtr[1]);
+    return result;
+}
+
+XamlRoot GetTaskbarXamlRoot(HWND hWnd, bool isSecondary) {
+    HWND hTaskSwWnd = isSecondary
+        ? (HWND)FindWindowEx(hWnd, nullptr, L"WorkerW", nullptr)
+        : (HWND)GetProp(hWnd, L"TaskbandHWND");
+    if (!hTaskSwWnd)
+        return nullptr;
+    void* vftable = isSecondary ? CSecondaryTaskBand_ITaskListWndSite_vftable
+                                : CTaskBand_ITaskListWndSite_vftable;
+    void* p = (void*)GetWindowLongPtr(hTaskSwWnd, 0);
+    for (int i = 0; *(void**)p != vftable; i++) {
+        if (i == 20)
+            return nullptr;
+        p = (void**)p + 1;
+    }
+    void* sharedPtr[2]{};
+    if (isSecondary)
+        CSecondaryTaskBand_GetTaskbarHost_Original(p, sharedPtr);
+    else
+        CTaskBand_GetTaskbarHost_Original(p, sharedPtr);
+    return XamlRootFromTaskbarHostSharedPtr(sharedPtr);
+}
+
+HWND FindCurrentProcessTaskbarWnd() {
+    HWND hWnd = nullptr;
+    while ((hWnd = FindWindowEx(nullptr, hWnd, L"Shell_TrayWnd", nullptr))) {
+        DWORD pid;
+        GetWindowThreadProcessId(hWnd, &pid);
+        if (pid == GetCurrentProcessId())
+            return hWnd;
+    }
+    return nullptr;
+}
+
+void ApplySettingsFromTaskbarThread() {
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND hWnd, LPARAM) -> BOOL {
+            WCHAR cls[32];
+            if (GetClassName(hWnd, cls, ARRAYSIZE(cls)) == 0)
+                return TRUE;
+            XamlRoot xamlRoot = nullptr;
+            if (_wcsicmp(cls, L"Shell_TrayWnd") == 0)
+                xamlRoot = GetTaskbarXamlRoot(hWnd, false);
+            else if (_wcsicmp(cls, L"Shell_SecondaryTrayWnd") == 0)
+                xamlRoot = GetTaskbarXamlRoot(hWnd, true);
+            if (xamlRoot)
+                ApplyStyle(xamlRoot);
+            return TRUE;
+        },
+        0);
+}
+
+void ApplySettings(HWND hTaskbarWnd) {
+    static const UINT msg =
+        RegisterWindowMessage(L"Windhawk_RunFromWindowThread_start-orb-restorer");
+    DWORD threadId = GetWindowThreadProcessId(hTaskbarWnd, nullptr);
+    if (!threadId)
+        return;
+    if (threadId == GetCurrentThreadId()) {
+        ApplySettingsFromTaskbarThread();
+        return;
+    }
+    HHOOK hook = SetWindowsHookEx(
+        WH_CALLWNDPROC,
+        [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
+            if (nCode == HC_ACTION &&
+                ((const CWPSTRUCT*)lParam)->message == msg)
+                ApplySettingsFromTaskbarThread();
+            return CallNextHookEx(nullptr, nCode, wParam, lParam);
+        },
+        nullptr, threadId);
+    if (!hook)
+        return;
+    SendMessage(hTaskbarWnd, msg, 0, 0);
+    UnhookWindowsHookEx(hook);
+}
+
+using IUIElement_Arrange_t =
+    HRESULT(WINAPI*)(void* pThis, winrt::Windows::Foundation::Rect rect);
+IUIElement_Arrange_t IUIElement_Arrange_Original;
+
+HRESULT WINAPI IUIElement_Arrange_Hook(void* pThis,
+                                       winrt::Windows::Foundation::Rect rect) {
+    auto original = [=] { return IUIElement_Arrange_Original(pThis, rect); };
+    if (!g_inArrangeOverride || g_unloading_win11)
+        return original();
+    FrameworkElement element = nullptr;
+    ((IUnknown*)pThis)
+        ->QueryInterface(winrt::guid_of<FrameworkElement>(),
+                         winrt::put_abi(element));
+    if (!element)
+        return original();
+    if (winrt::get_class_name(element) == L"Taskbar.ExperienceToggleButton" &&
+        Automation::AutomationProperties::GetAutomationId(element) == L"StartButton") {
+        bool hide;
+        EnterCriticalSection(&g_cs);
+        hide = g_settings.hideDefault;
+        LeaveCriticalSection(&g_cs);
+
+        CollapseStartButtonIcon(element, hide);
+    }
+    return IUIElement_Arrange_Original(pThis, rect);
+}
+
+using TaskbarCollapsibleLayoutXamlTraits_ArrangeOverride_t =
+    HRESULT(WINAPI*)(void* pThis,
+                     void* context,
+                     winrt::Windows::Foundation::Size size,
+                     winrt::Windows::Foundation::Size* resultSize);
+TaskbarCollapsibleLayoutXamlTraits_ArrangeOverride_t
+    TaskbarCollapsibleLayoutXamlTraits_ArrangeOverride_Original;
+
+HRESULT WINAPI TaskbarCollapsibleLayoutXamlTraits_ArrangeOverride_Hook(
+    void* pThis,
+    void* context,
+    winrt::Windows::Foundation::Size size,
+    winrt::Windows::Foundation::Size* resultSize) {
+    [[maybe_unused]] static bool hooked = [] {
+        Shapes::Rectangle rectangle;
+        IUIElement element = rectangle;
+        void** vtable = *(void***)winrt::get_abi(element);
+        WindhawkUtils::SetFunctionHook((IUIElement_Arrange_t)vtable[92],
+                                       IUIElement_Arrange_Hook,
+                                       &IUIElement_Arrange_Original);
+        Wh_ApplyHookOperations();
+        return true;
+    }();
+    g_inArrangeOverride = true;
+    HRESULT ret = TaskbarCollapsibleLayoutXamlTraits_ArrangeOverride_Original(
+        pThis, context, size, resultSize);
+    g_inArrangeOverride = false;
+    return ret;
+}
+
+bool HookTaskbarDllSymbols() {
+    HMODULE module =
+        LoadLibraryEx(L"taskbar.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!module)
+        return false;
+    WindhawkUtils::SYMBOL_HOOK taskbarDllHooks[] = {
+        {{LR"(const CTaskBand::`vftable'{for `ITaskListWndSite'})"},
+         &CTaskBand_ITaskListWndSite_vftable},
+        {{LR"(const CSecondaryTaskBand::`vftable'{for `ITaskListWndSite'})"},
+         &CSecondaryTaskBand_ITaskListWndSite_vftable},
+        {{LR"(public: virtual class std::shared_ptr<class TaskbarHost> __cdecl CTaskBand::GetTaskbarHost(void)const )"},
+         &CTaskBand_GetTaskbarHost_Original},
+        {{LR"(public: int __cdecl TaskbarHost::FrameHeight(void)const )"},
+         &TaskbarHost_FrameHeight_Original},
+        {{LR"(public: virtual class std::shared_ptr<class TaskbarHost> __cdecl CSecondaryTaskBand::GetTaskbarHost(void)const )"},
+         &CSecondaryTaskBand_GetTaskbarHost_Original},
+        {{LR"(public: void __cdecl std::_Ref_count_base::_Decref(void))"},
+         &std__Ref_count_base__Decref_Original},
+    };
+    return HookSymbols(module, taskbarDllHooks, ARRAYSIZE(taskbarDllHooks));
+}
+
+bool HookTaskbarViewDllSymbols(HMODULE module) {
+    WindhawkUtils::SYMBOL_HOOK hooks[] = {
+        {{LR"(public: virtual int __cdecl winrt::impl::produce<struct winrt::Taskbar::implementation::TaskbarCollapsibleLayout,struct winrt::Microsoft::UI::Xaml::Controls::IVirtualizingLayoutOverrides>::ArrangeOverride(void *,struct winrt::Windows::Foundation::Size,struct winrt::Windows::Foundation::Size *))"},
+         &TaskbarCollapsibleLayoutXamlTraits_ArrangeOverride_Original,
+         TaskbarCollapsibleLayoutXamlTraits_ArrangeOverride_Hook},
+    };
+    return HookSymbols(module, hooks, ARRAYSIZE(hooks));
+}
+
+HMODULE GetTaskbarViewModuleHandle() {
+    HMODULE m = GetModuleHandle(L"Taskbar.View.dll");
+    return m ? m : GetModuleHandle(L"ExplorerExtensions.dll");
+}
+
+using LoadLibraryExW_t = decltype(&LoadLibraryExW);
+LoadLibraryExW_t LoadLibraryExW_Original;
+
+HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName,
+                                   HANDLE hFile,
+                                   DWORD dwFlags) {
+    HMODULE module = LoadLibraryExW_Original(lpLibFileName, hFile, dwFlags);
+    if (module && !g_taskbarViewDllLoaded &&
+        GetTaskbarViewModuleHandle() == module &&
+        !g_taskbarViewDllLoaded.exchange(true)) {
+        if (HookTaskbarViewDllSymbols(module))
+            Wh_ApplyHookOperations();
+    }
+    return module;
+}
 
 // -------------------- IMAGE --------------------
 
@@ -123,6 +423,111 @@ HWND FindStartButton() {
 #define DWMWA_EXCLUDED_FROM_PEEK 12
 #endif
 
+bool IsStartMenuVisible() {
+    HWND hStartMenu = FindWindow(L"Windows.UI.Core.CoreWindow", L"Start");
+    if (hStartMenu && IsWindowVisible(hStartMenu)) {
+        return true;
+    }
+    HWND hClassicStart = FindWindow(L"ClassicShell.CMenuWin", NULL);
+    if (hClassicStart && IsWindowVisible(hClassicStart)) {
+        return true;
+    }
+    HWND hOpenStart = FindWindow(L"OpenShell.CMenuWin", NULL);
+    if (hOpenStart && IsWindowVisible(hOpenStart)) {
+        return true;
+    }
+    HWND hWin11Start = FindWindow(L"Windows.UI.Core.CoreWindow", L"StartMenuExperienceHost");
+    if (hWin11Start && IsWindowVisible(hWin11Start)) {
+        return true;
+    }
+    return false;
+}
+
+void UpdateStartButtonVisibility() {
+    if (g_isWindows11 && g_taskbarViewDllLoaded) {
+        HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
+        if (hTaskbarWnd)
+            ApplySettings(hTaskbarWnd);
+        return; // Return early on native Windows 11 to avoid breaking clickability
+    }
+
+    if (!g_hStart || !IsWindow(g_hStart)) return;
+
+    bool hide;
+    EnterCriticalSection(&g_cs);
+    hide = g_settings.hideDefault;
+    LeaveCriticalSection(&g_cs);
+
+    LONG_PTR exStyle = GetWindowLongPtr(g_hStart, GWL_EXSTYLE);
+    if (hide) {
+        if (!(exStyle & WS_EX_LAYERED)) {
+            SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
+        }
+        // Alpha 1 makes it completely transparent but keeps it 100% clickable/hoverable!
+        SetLayeredWindowAttributes(g_hStart, 0, 1, LWA_ALPHA);
+    } else {
+        if (exStyle & WS_EX_LAYERED) {
+            SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
+            // Fully redraw the window to bring back its original theme/icon
+            RedrawWindow(g_hStart, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+        }
+    }
+}
+
+LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    static bool s_eatNextLButtonUp = false;
+
+    switch (uMsg) {
+        case WM_MOUSEACTIVATE: {
+            if (IsStartMenuVisible()) {
+                s_eatNextLButtonUp = true;
+                return MA_NOACTIVATEANDEAT;
+            }
+            break;
+        }
+        case WM_LBUTTONDOWN: {
+            if (IsStartMenuVisible()) {
+                s_eatNextLButtonUp = true;
+                return 0;
+            }
+            break;
+        }
+        case WM_LBUTTONUP: {
+            if (s_eatNextLButtonUp) {
+                s_eatNextLButtonUp = false;
+                return 0;
+            }
+            break;
+        }
+        case WM_PAINT: {
+            bool hide;
+            EnterCriticalSection(&g_cs);
+            hide = g_settings.hideDefault;
+            LeaveCriticalSection(&g_cs);
+
+            if (hide) {
+                PAINTSTRUCT ps;
+                HDC hdc = BeginPaint(hWnd, &ps);
+                EndPaint(hWnd, &ps);
+                return 0;
+            }
+            break;
+        }
+        case WM_ERASEBKGND: {
+            bool hide;
+            EnterCriticalSection(&g_cs);
+            hide = g_settings.hideDefault;
+            LeaveCriticalSection(&g_cs);
+
+            if (hide) {
+                return TRUE; // indicate background erased/painted (drawn nothing)
+            }
+            break;
+        }
+    }
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
 void PositionOrb() {
     if (!g_hOrbWnd) return;
 
@@ -132,16 +537,18 @@ void PositionOrb() {
     }
     if (!hTask) return;
 
-    if (!g_hStart || !IsWindow(g_hStart))
+    if (!g_hStart || !IsWindow(g_hStart)) {
         g_hStart = FindStartButton();
+        if (g_hStart) {
+            SetWindowSubclass(g_hStart, StartButtonSubclassProc, 1, 0);
+            UpdateStartButtonVisibility();
+        }
+    }
 
     if (!g_hStart) return;
 
-    if (g_settings.hideDefault) {
-        ShowWindow(g_hStart, SW_HIDE);
-    } else {
-        ShowWindow(g_hStart, SW_SHOW);
-    }
+    // Always keep the original start button shown so it remains clickable and hit-testable
+    ShowWindow(g_hStart, SW_SHOW);
 
     // If minimized, restore it
     if (IsIconic(g_hOrbWnd)) {
@@ -434,6 +841,10 @@ LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_USER + 1: // WM_SETTINGS_CHANGED
         PositionOrb();
+        if (g_hStart && IsWindow(g_hStart)) {
+            InvalidateRect(g_hStart, NULL, TRUE);
+            UpdateWindow(g_hStart);
+        }
         UpdateOrbDisplay(hwnd);
         return 0;
 
@@ -483,9 +894,23 @@ BOOL Wh_ModInit() {
     g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
     g_settings.offsetX = Wh_GetIntSetting(L"offsetX");
     g_settings.offsetY = Wh_GetIntSetting(L"offsetY");
-    g_settings.hideDefault = Wh_GetIntSetting(L"hideDefault");
+    g_settings.hideDefault = Wh_GetIntSetting(L"hideDefault") != 0;
 
     LoadImages();
+
+    if (HookTaskbarDllSymbols()) {
+        g_isWindows11 = true;
+        if (HMODULE m = GetTaskbarViewModuleHandle()) {
+            g_taskbarViewDllLoaded = true;
+            if (HookTaskbarViewDllSymbols(m)) {
+                Wh_ApplyHookOperations();
+            }
+        } else {
+            HMODULE kb = GetModuleHandle(L"kernelbase.dll");
+            auto pLoadLib = (decltype(&LoadLibraryExW))GetProcAddress(kb, "LoadLibraryExW");
+            WindhawkUtils::SetFunctionHook(pLoadLib, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
+        }
+    }
 
     // Create the background thread
     g_hOrbThread = CreateThread(NULL, 0, OrbThreadProc, NULL, 0, NULL);
@@ -493,10 +918,57 @@ BOOL Wh_ModInit() {
     return TRUE;
 }
 
+// -------------------- AFTER INIT --------------------
+
+void Wh_ModAfterInit() {
+    if (g_isWindows11) {
+        if (!g_taskbarViewDllLoaded) {
+            if (HMODULE m = GetTaskbarViewModuleHandle()) {
+                if (!g_taskbarViewDllLoaded.exchange(true)) {
+                    if (HookTaskbarViewDllSymbols(m)) {
+                        Wh_ApplyHookOperations();
+                    }
+                }
+            }
+        }
+        HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
+        if (hTaskbarWnd)
+            ApplySettings(hTaskbarWnd);
+    }
+}
+
+// -------------------- BEFORE UNINIT --------------------
+
+void Wh_ModBeforeUninit() {
+    if (g_isWindows11) {
+        g_unloading_win11 = true;
+        HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
+        if (hTaskbarWnd)
+            ApplySettings(hTaskbarWnd);
+    }
+}
+
 // -------------------- CLEANUP --------------------
 
 void Wh_ModUninit() {
     g_isUnloading = true;
+
+    if (g_isWindows11) {
+        g_unloading_win11 = true;
+        HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
+        if (hTaskbarWnd)
+            ApplySettings(hTaskbarWnd);
+    }
+
+    if (g_hStart && IsWindow(g_hStart)) {
+        RemoveWindowSubclass(g_hStart, StartButtonSubclassProc, 1);
+        LONG_PTR exStyle = GetWindowLongPtr(g_hStart, GWL_EXSTYLE);
+        if (exStyle & WS_EX_LAYERED) {
+            SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
+        }
+        InvalidateRect(g_hStart, NULL, TRUE);
+        UpdateWindow(g_hStart);
+    }
 
     if (g_hOrbWnd) {
         PostMessage(g_hOrbWnd, WM_CLOSE, 0, 0);
@@ -529,10 +1001,12 @@ void Wh_ModSettingsChanged() {
     g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
     g_settings.offsetX = Wh_GetIntSetting(L"offsetX");
     g_settings.offsetY = Wh_GetIntSetting(L"offsetY");
-    g_settings.hideDefault = Wh_GetIntSetting(L"hideDefault");
+    g_settings.hideDefault = Wh_GetIntSetting(L"hideDefault") != 0;
     LeaveCriticalSection(&g_cs);
 
     LoadImages();
+
+    UpdateStartButtonVisibility();
 
     if (g_hOrbWnd) {
         PostMessage(g_hOrbWnd, WM_USER + 1, 0, 0);
