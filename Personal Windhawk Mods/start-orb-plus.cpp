@@ -1,8 +1,8 @@
 // ==WindhawkMod==
-// @id             start-orb-plus
-// @name           Start Orb Plus
-// @description    Windows 7 style Start Orb overlay
-// @version        1.0.0
+// @id             start-orb-restorer
+// @name           Start Button Orb +
+// @description    Stable Windows 7 style Start Orb overlay
+// @version        0.6
 // @author         Bbmaster123/AI
 // @include        explorer.exe
 // @architecture   x86-64
@@ -21,6 +21,7 @@
 - maxOpacity: 255
 - offsetX: 0
 - offsetY: 0
+- hideDefault: 0
 */
 // ==/WindhawkModSettings==
 
@@ -38,6 +39,7 @@ struct {
     int maxOpacity;
     int offsetX;
     int offsetY;
+    int hideDefault;
 } g_settings;
 
 HWND g_hOrbWnd = NULL;
@@ -134,6 +136,12 @@ void PositionOrb() {
         g_hStart = FindStartButton();
 
     if (!g_hStart) return;
+
+    if (g_settings.hideDefault) {
+        ShowWindow(g_hStart, SW_HIDE);
+    } else {
+        ShowWindow(g_hStart, SW_SHOW);
+    }
 
     // If minimized, restore it
     if (IsIconic(g_hOrbWnd)) {
@@ -475,6 +483,7 @@ BOOL Wh_ModInit() {
     g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
     g_settings.offsetX = Wh_GetIntSetting(L"offsetX");
     g_settings.offsetY = Wh_GetIntSetting(L"offsetY");
+    g_settings.hideDefault = Wh_GetIntSetting(L"hideDefault");
 
     LoadImages();
 
@@ -520,6 +529,7 @@ void Wh_ModSettingsChanged() {
     g_settings.maxOpacity = Wh_GetIntSetting(L"maxOpacity");
     g_settings.offsetX = Wh_GetIntSetting(L"offsetX");
     g_settings.offsetY = Wh_GetIntSetting(L"offsetY");
+    g_settings.hideDefault = Wh_GetIntSetting(L"hideDefault");
     LeaveCriticalSection(&g_cs);
 
     LoadImages();
