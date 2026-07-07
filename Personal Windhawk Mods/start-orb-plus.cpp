@@ -21,7 +21,7 @@
 - maxOpacity: 255
 - offsetX: 0
 - offsetY: 0
-- hideDefault: 0
+- hideDefault: 1
 */
 // ==/WindhawkModSettings==
 
