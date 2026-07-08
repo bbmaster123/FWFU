@@ -1,5 +1,5 @@
 // ==WindhawkMod==
-// @id             start-orb-ploos
+// @id             start-orb-plus
 // @name           Start Orb Plus
 // @description    Windows 7 style Start Orb overlay
 // @version        1.0.0
