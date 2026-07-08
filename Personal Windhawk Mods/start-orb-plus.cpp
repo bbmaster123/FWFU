@@ -1,29 +1,47 @@
 // ==WindhawkMod==
-// @id             start-orb-restorer
-// @name           Start Button Orb +
-// @description    Stable Windows 7 style Start Orb overlay
-// @version        0.7
+// @id             start-orb-ploos
+// @name           Start Orb Plus
+// @description    Windows 7 style Start Orb overlay
+// @version        0.9
 // @author         Bbmaster123/AI
 // @include        explorer.exe
 // @architecture   x86-64
 // @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi -lcomctl32 -lole32 -loleaut32 -lruntimeobject
 // ==/WindhawkMod==
+// ==WindhawkModReadme==
+/*
+![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/start-orb.gif)
 
+Replaces start button with custom start button on Windows 10 and 11 using a GDI overlay. Users supply 3 Images:
+1. Idle
+2. Hover
+3. Pressed
+
+## Features
+- Animated transition effect similar to windows 7 start orb
+- animation speed setting
+- X/Y Size and offset adjustments
+- Min and Max opacity for animation states
+- Option to hide original start button icon. Disable If you would like to use a semi-transparent overlay effect.
+- Works in all taskbar orientations  
+- Compatible with styler mods Explorerpatcher 
+- Tested on builds ranging from 19045 to 26300
+*/
+// ==/WindhawkModReadme==
 // ==WindhawkModSettings==
 /*
-- orbNormal: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orb.png"
-- orbHover: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbHover.png"
-- orbPressed: "C:\\Users\\bbmaster123\\Desktop\\Junk\\orb\\orbPressed.png"
+- orbNormal: "C:\\Users\\Admin\\Pictures\\orbs\\orbIdle.png"
+- orbHover: "C:\\Users\\Admin\\Pictures\\orbs\\orbHover.png"
+- orbPressed: "C:\\Users\\Admin\\Pictures\\orbs\\orbPressed.png"
 - orbSizeX: 72
 - orbSizeY: 72
-- animSpeed: 15
-- minOpacity: 255
-- maxOpacity: 255
 - offsetX: 0
 - offsetY: 0
-- hideDefault: false
+- animSpeed: 85
+- minOpacity: 255
+- maxOpacity: 255
+- hideDefault: true
   $name: Hide Default Start Button Icon
-  $description: Keeps the button fully clickable but hides the original icon drawing. Works perfectly on Windows 10 and 11.
 */
 // ==/WindhawkModSettings==
 
@@ -506,8 +524,7 @@ LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LP
             LeaveCriticalSection(&g_cs);
 
             if (hide) {
-                PAINTSTRUCT ps;
-                HDC hdc = BeginPaint(hWnd, &ps);
+                PAINTSTRUCT ps;             
                 EndPaint(hWnd, &ps);
                 return 0;
             }
