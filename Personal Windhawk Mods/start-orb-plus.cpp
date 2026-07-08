@@ -2,8 +2,8 @@
 // @id             start-orb-ploos
 // @name           Start Orb Plus
 // @description    Windows 7 style Start Orb overlay
-// @version        0.9
-// @author         Bbmaster123/AI
+// @version        1.0.0
+// @author         Bbmaster123/Gemini
 // @include        explorer.exe
 // @architecture   x86-64
 // @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi -lcomctl32 -lole32 -loleaut32 -lruntimeobject
