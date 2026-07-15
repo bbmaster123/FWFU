@@ -4203,6 +4203,9 @@ LRESULT CALLBACK Win10PopupWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     if (uMsg == WM_ACTIVATE) {
         if (LOWORD(wParam) == WA_INACTIVE) {
             HWND hActive = (HWND)lParam;
+            // If lParam is NULL, peek at the actual foreground window to verify click-away
+            if (hActive == NULL) hActive = GetForegroundWindow();
+            
             if (hActive != hWnd && hActive != state.sourceHwnd && !IsChild(hWnd, hActive)) {
                 g_lastHideTickCount = GetTickCount();
                 PostMessageW(hWnd, WM_USER + 5002, 0, 0); // Hide popup
@@ -4707,7 +4710,12 @@ void ShowWin10ForecastPopupInternal(HWND hClock) {
             if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Showing window");
             SetWindowPos(state.popupHwnd, NULL, (int)offsetX, (int)offsetY, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
             ShowWindow(state.popupHwnd, SW_SHOW);
+            
+            // Force activation/focus so dismissal on click-away (WA_INACTIVE) triggers reliably
             SetForegroundWindow(state.popupHwnd);
+            SetActiveWindow(state.popupHwnd);
+            SetFocus(state.popupHwnd);
+
             RedrawWindow(state.popupHwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
             if (g_debugLogs) {
