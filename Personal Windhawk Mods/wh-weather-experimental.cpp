@@ -2885,31 +2885,24 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                 std::wstring alertStr = L"";
                 try {
                     wchar_t alertPath[512];
-                    swprintf(alertPath, L"/alerts/active?point=%.4f,%.4f", g_cachedLatitude, g_cachedLongitude);
-                    std::wstring alertsJson = RequestHttpData(L"api.weather.gov", alertPath, true);
+                    swprintf(alertPath, L"/v3/alerts/headlines?geocode=%.4f,%.4f&format=json&language=en-US&apiKey=e1f10a1e78da46f5b10a1e78da96f525", g_cachedLatitude, g_cachedLongitude);
+                    std::wstring alertsJson = RequestHttpData(L"api.weather.com", alertPath, true);
                     if (g_debugLogs) {
-                        Wh_Log(L"[EP_WeatherHost] Weather.gov Alerts API returned %d chars: %.100s", (int)alertsJson.length(), alertsJson.c_str());
+                        Wh_Log(L"[EP_WeatherHost] Weather.com Alerts API returned %d chars: %.100s", (int)alertsJson.length(), alertsJson.c_str());
                     }
                     if (!alertsJson.empty()) {
-                        if (alertsJson.find(L"https://api.weather.gov/problems/InvalidParameter") != std::wstring::npos ||
-                            alertsJson.find(L"out of bounds") != std::wstring::npos) {
+                        std::wstring alertsArray = ExtractJSONArray(alertsJson, L"alerts");
+                        if (!alertsArray.empty() && alertsArray.length() > 5) {
+                            alertStr = ExtractJSONValue(alertsArray, L"eventDescription");
+                            if (alertStr.empty()) {
+                                alertStr = ExtractJSONValue(alertsArray, L"headlineText");
+                            }
                             if (g_debugLogs) {
-                                Wh_Log(L"[EP_WeatherHost] Coordinates (%.4f, %.4f) are outside US boundaries; Weather.gov alerts are US-only.", g_cachedLatitude, g_cachedLongitude);
+                                Wh_Log(L"[EP_WeatherHost] Found active alert: %s", alertStr.c_str());
                             }
                         } else {
-                            std::wstring featuresArray = ExtractJSONArray(alertsJson, L"features");
-                            if (!featuresArray.empty() && featuresArray.length() > 5) {
-                                alertStr = ExtractJSONValue(featuresArray, L"event");
-                                if (alertStr.empty()) {
-                                    alertStr = ExtractJSONValue(featuresArray, L"headline");
-                                }
-                                if (g_debugLogs) {
-                                    Wh_Log(L"[EP_WeatherHost] Found active alert: %s", alertStr.c_str());
-                                }
-                            } else {
-                                if (g_debugLogs) {
-                                    Wh_Log(L"[EP_WeatherHost] No active alerts in the array");
-                                }
+                            if (g_debugLogs) {
+                                Wh_Log(L"[EP_WeatherHost] No active alerts in the array");
                             }
                         }
                     }
