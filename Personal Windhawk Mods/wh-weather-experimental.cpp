@@ -3,7 +3,7 @@
 // @name            Windhawk Weather
 // @description     A lightweight taskbar weather widget and flyout that injects directly into the Windows Taskbar UI Tree.
 // @version         1.1.0
-// @author          Gemini
+// @author          bbmaster123
 // @include         explorer.exe
 // @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion -lcomctl32 -ld2d1 -ldwrite
 // ==/WindhawkMod==
@@ -12,6 +12,8 @@
 /*
 - location: "auto"
   $name: Location (City Name or "auto" for IP-based Geolocation)
+- mockWeatherAlert: ""
+  $name: Mock Weather Alert (Custom text to display as an advisory banner, e.g. "Air Quality Alert - Wildfire Smoke". Leave blank for live alerts)
 - useCelsius: true
   $name: Use Metric System (°C, km/h)
   $description: Uncheck to use Imperial System (°F, mph)
@@ -120,6 +122,7 @@
 #include <winrt/base.h>
 #include <algorithm>
 #include <functional>
+#include <cmath>
 
 
 #include <atomic>
@@ -174,52 +177,12 @@ int g_line2FontSize = 11;
 bool g_line2Bold = false;
 int g_density = 2;
 
-HANDLE g_hXamlActCtx = INVALID_HANDLE_VALUE;
-bool g_xamlActCtxInitialized = false;
-
-struct XamlActCtxScope {
-    ULONG_PTR cookie = 0;
-    
-    XamlActCtxScope() {
-        if (!g_xamlActCtxInitialized) {
-            g_xamlActCtxInitialized = true;
-            wchar_t tempPath[MAX_PATH];
-            if (GetTempPathW(MAX_PATH, tempPath)) {
-                wchar_t manifestPath[MAX_PATH];
-                swprintf_s(manifestPath, L"%sWhWeatherXaml.manifest", tempPath);
-                
-                FILE* f = _wfopen(manifestPath, L"w");
-                if (f) {
-                    fputs("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
-                          "<assembly manifestVersion=\"1.0\" xmlns=\"urn:schemas-microsoft-com:asm.v1\">\n"
-                          "  <assemblyIdentity version=\"1.0.0.0\" name=\"WhWeather.App\" type=\"win32\"/>\n"
-                          "  <compatibility xmlns=\"urn:schemas-microsoft-com:compatibility.v1\">\n"
-                          "    <application>\n"
-                          "    </application>\n"
-                          "  </compatibility>\n"
-                          "</assembly>", f);
-                    fclose(f);
-                }
-                
-                ACTCTX actCtx = { sizeof(ACTCTX), ACTCTX_FLAG_SET_PROCESS_DEFAULT, manifestPath };
-                g_hXamlActCtx = CreateActCtx(&actCtx);
-            }
-        }
-        if (g_hXamlActCtx != INVALID_HANDLE_VALUE)
-            ActivateActCtx(g_hXamlActCtx, &cookie);
-    }
-    
-    ~XamlActCtxScope() {
-        if (cookie != 0)
-            DeactivateActCtx(0, cookie);
-    }
-};
-
 // Weather state Cached values
 std::wstring g_cachedTemp = L"--°F";
 std::wstring g_cachedCondition = L"Loading";
 std::wstring g_cachedIcon = L"⏳";
 std::wstring g_activeWarning = L"";
+std::wstring g_mockWeatherAlert = L"";
 std::wstring g_displayCity = L"Detecting...";
 double g_cachedLatitude = 40.7128;  // New York Default
 double g_cachedLongitude = -74.0060;
@@ -242,6 +205,22 @@ struct DailyForecast {
     std::wstring tempMin;
     std::wstring rawDate;
 };
+
+struct ThreadXamlState {
+    winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager manager = nullptr;
+    winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource source = nullptr;
+    HWND popupHwnd = nullptr;
+    HWND sourceHwnd = nullptr;
+};
+
+ThreadXamlState g_globalXamlState;
+
+ThreadXamlState& GetThreadXamlState() {
+    return g_globalXamlState;
+}
+
+HANDLE g_hPopupThread = NULL;
+DWORD g_dwPopupThreadId = 0;
 
 struct HourlyForecast {
     std::wstring timeString;
@@ -271,11 +250,11 @@ ID2D1Factory* g_pD2DFactory = nullptr;
 IDWriteFactory* g_pDWriteFactory = nullptr;
 
 extern HWND g_hSubclassedWnd;
-extern HWND g_win10PopupHwnd;
 bool IsWindows11();
 void AlignOverlayWindow();
 void RestoreDefaultWindowSize(HWND hwndToClean);
 int GetRequiredWeatherWidth(HWND hWnd);
+void InvalidateClockParentRegion(HWND hWnd);
 static bool g_inInternalResize = false;
 void ForceTaskbarUpdateOriginal();
 void CleanupXamlMedia(winrt::Windows::UI::Xaml::UIElement const& element);
@@ -383,7 +362,6 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
     if (!weatherGrid)
         return;
     try {
-        XamlActCtxScope actCtxScope;
         HWND hAnchor = FindSystemAnchorWnd();
         if (hAnchor) {
             RECT anchorRect;
@@ -411,7 +389,6 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
 
                         // Reserve space next to the sibling TaskbarFrameRepeater/ItemsRepeater
                         try {
-        XamlActCtxScope actCtxScope;
                             if (auto parentGrid = weatherGrid.Parent().try_as<Grid>()) {
                                 auto siblings = parentGrid.Children();
                                 for (uint32_t i = 0; i < siblings.Size(); i++) {
@@ -441,7 +418,6 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
                                                g_textOffset)});
                         // Reserve space on vertical taskbars
                         try {
-        XamlActCtxScope actCtxScope;
                             if (auto parentGrid = weatherGrid.Parent().try_as<Grid>()) {
                                 auto siblings = parentGrid.Children();
                                 for (uint32_t i = 0; i < siblings.Size(); i++) {
@@ -854,16 +830,25 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         }
     }
 
+    double panelHeight = 365.0;
+    std::wstring displayWarning = g_activeWarning;
+    if (!g_mockWeatherAlert.empty()) {
+        displayWarning = g_mockWeatherAlert;
+    }
+    if (!displayWarning.empty()) {
+        panelHeight += 32.0;
+    }
+
     rootGrid.Width(panelWidth);
     rootGrid.MaxWidth(9999.0);
-    rootGrid.Height(365.0);
-    rootGrid.MaxHeight(365.0);
+    rootGrid.Height(panelHeight);
+    rootGrid.MaxHeight(panelHeight);
 
     if (IsWindows11()) {
         rootGrid.CornerRadius(CornerRadius{8.0, 8.0, 8.0, 8.0});
         try {
             winrt::Windows::UI::Xaml::Media::RectangleGeometry clipGeo;
-            clipGeo.Rect(winrt::Windows::Foundation::Rect{0, 0, (float)panelWidth, 365.0f});
+            clipGeo.Rect(winrt::Windows::Foundation::Rect{0, 0, (float)panelWidth, (float)panelHeight});
             rootGrid.Clip(clipGeo);
         } catch (...) {}
     } else {
@@ -888,12 +873,13 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     }
 
     winrt::Windows::UI::Color borderColor;
-    borderColor.A = 40;
+    borderColor.A = 64; // Increased from 40 for better visibility
     borderColor.R = 128;
     borderColor.G = 128;
     borderColor.B = 128;
     rootGrid.BorderBrush(SolidColorBrush{borderColor});
     rootGrid.BorderThickness(Thickness{1, 1, 1, 1});
+    rootGrid.UseLayoutRounding(true);
 
     StackPanel mainStack;
     mainStack.Orientation(Orientation::Vertical);
@@ -915,7 +901,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         mainStack.ChildrenTransitions(mainTrans);
     }
 
-    if (!g_activeWarning.empty()) {
+    if (!displayWarning.empty()) {
         Grid warningBar;
         warningBar.CornerRadius(CornerRadius{4, 4, 4, 4});
         warningBar.Padding(Thickness{6, 4, 6, 4});
@@ -944,7 +930,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         warningIcon.VerticalAlignment(VerticalAlignment::Center);
 
         TextBlock warningText;
-        warningText.Text(g_activeWarning);
+        warningText.Text(displayWarning);
         warningText.FontSize(11 * g_panelFontScale);
         warningText.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
         warningText.Foreground(SolidColorBrush{warningTextColor});
@@ -1834,7 +1820,6 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
     if (!weatherGrid)
         return;
     try {
-        XamlActCtxScope actCtxScope;
         UpdateInjectedWeatherLayout(weatherGrid);
 
         weatherGrid.Children().Clear();
@@ -1876,7 +1861,6 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         buttonElement.HorizontalAlignment(HorizontalAlignment::Stretch);
 
         try {
-        XamlActCtxScope actCtxScope;
             buttonElement.CornerRadius(CornerRadius{4.0, 4.0, 4.0, 4.0});
             buttonElement.UseSystemFocusVisuals(false);
         } catch (...) {
@@ -1956,7 +1940,6 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
             g_line2Bold ? winrt::Windows::UI::Text::FontWeights::Bold()
                         : winrt::Windows::UI::Text::FontWeights::Normal());
         try {
-        XamlActCtxScope actCtxScope;
             condBlock.Opacity(0.85);
         } catch (...) {
         }
@@ -2013,7 +1996,6 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                     g_activeFlyout = flyout;
                 } catch (...) {}
                 try {
-                    XamlActCtxScope actCtxScope;
                     winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutShowOptions showOptions;
                     
                     auto placement = winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Top;
@@ -2569,12 +2551,14 @@ void QueueWeatherUpdateOnUIThread() {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         }
         if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd)) {
+            InvalidateClockParentRegion(g_hSubclassedWnd);
             SetWindowPos(g_hSubclassedWnd, NULL, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             RedrawWindow(g_hSubclassedWnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
 
             // If the forecast popup is currently visible, trigger a layout re-population asynchronously!
-            if (g_win10PopupHwnd && IsWindowVisible(g_win10PopupHwnd)) {
+            ThreadXamlState& state = GetThreadXamlState();
+            if (state.popupHwnd && IsWindowVisible(state.popupHwnd)) {
                 PostMessageW(g_hSubclassedWnd, WM_USER + 4244, 0, 0);
             }
         }
@@ -2597,7 +2581,6 @@ void QueueWeatherUpdateOnUIThread() {
                     winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                     [weakGrid, temp, icon, condition, acquired]() {
                         try {
-                            XamlActCtxScope actCtxScope;
                             if (auto grid = weakGrid.get()) {
                                 UpdateWeatherXamlElements(grid, temp, icon, condition, acquired);
                             }
@@ -2637,7 +2620,6 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
         if (locLower == L"auto" || locLower.empty()) {
             bool preciseSuccess = false;
             try {
-        XamlActCtxScope actCtxScope;
                 if (g_debugLogs)
                     Wh_Log(L"[EP_WeatherHost] Attempting WinRT Geolocator precision search...");
                 using namespace winrt::Windows::Devices::Geolocation;
@@ -2645,7 +2627,7 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                 geolocator.DesiredAccuracy(PositionAccuracy::Default);
                 auto op = geolocator.GetGeopositionAsync();
                 Geoposition pos = nullptr;
-                if (op.wait_for(std::chrono::seconds(7)) == winrt::Windows::Foundation::AsyncStatus::Completed) {
+                if (op.wait_for(std::chrono::seconds(1)) == winrt::Windows::Foundation::AsyncStatus::Completed) {
                     pos = op.GetResults();
                 } else {
                     op.Cancel();
@@ -2903,18 +2885,39 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                 std::wstring alertStr = L"";
                 try {
                     wchar_t alertPath[512];
-                    swprintf(alertPath, L"/v1/alerts?latitude=%.4f&longitude=%.4f&timezone=auto", g_cachedLatitude, g_cachedLongitude);
-                    std::wstring alertsJson = RequestHttpData(L"alerts.open-meteo.com", alertPath, true);
+                    swprintf(alertPath, L"/alerts/active?point=%.4f,%.4f", g_cachedLatitude, g_cachedLongitude);
+                    std::wstring alertsJson = RequestHttpData(L"api.weather.gov", alertPath, true);
+                    if (g_debugLogs) {
+                        Wh_Log(L"[EP_WeatherHost] Weather.gov Alerts API returned %d chars: %.100s", (int)alertsJson.length(), alertsJson.c_str());
+                    }
                     if (!alertsJson.empty()) {
-                        std::wstring alertsArray = ExtractJSONArray(alertsJson, L"alerts");
-                        if (!alertsArray.empty() && alertsArray.length() > 10) {
-                            alertStr = ExtractJSONValue(alertsArray, L"headline");
-                            if (alertStr.empty()) {
-                                alertStr = ExtractJSONValue(alertsArray, L"event");
+                        if (alertsJson.find(L"https://api.weather.gov/problems/InvalidParameter") != std::wstring::npos ||
+                            alertsJson.find(L"out of bounds") != std::wstring::npos) {
+                            if (g_debugLogs) {
+                                Wh_Log(L"[EP_WeatherHost] Coordinates (%.4f, %.4f) are outside US boundaries; Weather.gov alerts are US-only.", g_cachedLatitude, g_cachedLongitude);
+                            }
+                        } else {
+                            std::wstring featuresArray = ExtractJSONArray(alertsJson, L"features");
+                            if (!featuresArray.empty() && featuresArray.length() > 5) {
+                                alertStr = ExtractJSONValue(featuresArray, L"event");
+                                if (alertStr.empty()) {
+                                    alertStr = ExtractJSONValue(featuresArray, L"headline");
+                                }
+                                if (g_debugLogs) {
+                                    Wh_Log(L"[EP_WeatherHost] Found active alert: %s", alertStr.c_str());
+                                }
+                            } else {
+                                if (g_debugLogs) {
+                                    Wh_Log(L"[EP_WeatherHost] No active alerts in the array");
+                                }
                             }
                         }
                     }
-                } catch (...) {}
+                } catch (...) {
+                    if (g_debugLogs) {
+                        Wh_Log(L"[EP_WeatherHost] Alerts API query encountered an exception");
+                    }
+                }
 
                 std::wstring currentBlock =
                     ExtractJSONObject(forecastJson, L"current");
@@ -2942,13 +2945,42 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                 }
 
                 int codeVal = !codeStr.empty() ? _wtoi(codeStr.c_str()) : 0;
+                double tempVal = !tempStr.empty() ? wcstod(tempStr.c_str(), NULL) : 0.0;
+                double windVal = !windSpeedStr.empty() ? wcstod(windSpeedStr.c_str(), NULL) : 0.0;
+
                 if (alertStr.empty()) {
-                    if (codeVal >= 95) {
+                    if (codeVal == 99 || codeVal == 96) {
                         alertStr = L"Severe Thunderstorm Warning";
+                    } else if (codeVal == 95) {
+                        alertStr = L"Thunderstorm Advisory";
                     } else if (codeVal == 82) {
                         alertStr = L"Torrential Rain Advisory";
-                    } else if (codeVal == 75) {
+                    } else if (codeVal == 75 || codeVal == 86) {
                         alertStr = L"Heavy Snow Warning";
+                    } else if (codeVal == 73 || codeVal == 85) {
+                        alertStr = L"Snow Advisory";
+                    } else if (codeVal == 71) {
+                        alertStr = L"Winter Weather Advisory";
+                    } else if (codeVal == 67) {
+                        alertStr = L"Ice Storm Warning";
+                    } else if (codeVal == 66) {
+                        alertStr = L"Freezing Rain Advisory";
+                    } else if (codeVal == 65) {
+                        alertStr = L"Heavy Rain Advisory";
+                    } else if (codeVal == 45 || codeVal == 48) {
+                        alertStr = L"Dense Fog Advisory";
+                    } else if (tempVal >= 40.0) {
+                        alertStr = L"Extreme Heat Warning";
+                    } else if (tempVal >= 35.0) {
+                        alertStr = L"Heat Advisory";
+                    } else if (tempVal <= -15.0) {
+                        alertStr = L"Extreme Cold Warning";
+                    } else if (tempVal <= -5.0) {
+                        alertStr = L"Winter Weather Advisory";
+                    } else if (windVal >= 60.0) {
+                        alertStr = L"High Wind Warning";
+                    } else if (windVal >= 40.0) {
+                        alertStr = L"Wind Advisory";
                     }
                 }
 
@@ -3222,7 +3254,6 @@ void RemoveInjectedFromGrid(Grid grid) {
     if (!grid)
         return;
     try {
-        XamlActCtxScope actCtxScope;
         auto children = grid.Children();
         for (int i = (int)children.Size() - 1; i >= 0; i--) {
             if (auto fe = children.GetAt(i).try_as<FrameworkElement>()) {
@@ -3245,7 +3276,6 @@ void RemoveInjectedFromPanel(winrt::Windows::UI::Xaml::Controls::Panel panel) {
     if (!panel)
         return;
     try {
-        XamlActCtxScope actCtxScope;
         auto children = panel.Children();
         for (int i = (int)children.Size() - 1; i >= 0; i--) {
             if (auto fe = children.GetAt(i).try_as<FrameworkElement>()) {
@@ -3274,7 +3304,6 @@ void InjectContentIntoGrid(FrameworkElement element,
     // Make sure we span the entire Grid, bypassing any column definitions,
     // columns, or layout cells so that margin aligns globally
     try {
-        XamlActCtxScope actCtxScope;
         Grid::SetColumn(weatherGrid, 0);
         Grid::SetColumnSpan(weatherGrid, 99);
         Grid::SetRow(weatherGrid, 0);
@@ -3303,7 +3332,6 @@ void InjectContentIntoGrid(FrameworkElement element,
                         winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                         [weakWeatherGrid]() {
                             try {
-                                XamlActCtxScope actCtxScope;
                                 if (auto wg2 = weakWeatherGrid.get()) {
                                     UpdateInjectedWeatherLayout(wg2);
                                 }
@@ -3364,7 +3392,8 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                         existingChild.Opacity(0.0);
                         existingChild.IsHitTestVisible(false);
                         try {
-        XamlActCtxScope actCtxScope; existingChild.Margin(Thickness{0,0,0,0}); } catch(...) {}
+                            existingChild.Margin(Thickness{0,0,0,0});
+                        } catch(...) {}
                     }
                 }
             }
@@ -3391,7 +3420,6 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                                     winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                                     [weakWg]() {
                                         try {
-                                            XamlActCtxScope actCtxScope;
                                             if (auto wg2 = weakWg.get()) {
                                                 UpdateInjectedWeatherLayout(wg2);
                                             }
@@ -3483,7 +3511,6 @@ void ScheduleScanAsync(FrameworkElement startNode) {
         return;
     auto weak = winrt::make_weak(startNode);
     try {
-        XamlActCtxScope actCtxScope;
         startNode.Dispatcher().RunAsync(
             winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [weak]() {
                 g_scanPending = false;
@@ -3528,7 +3555,6 @@ void ScheduleScanAsync(FrameworkElement startNode) {
 
 FrameworkElement GetFrameworkElementFromNative(void* pThis) {
     try {
-        XamlActCtxScope actCtxScope;
         void* iUnknownPtr = (void**)pThis + 3;
         winrt::Windows::Foundation::IUnknown iUnknown;
         winrt::copy_from_abi(iUnknown, iUnknownPtr);
@@ -4064,10 +4090,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE get_WindowHandle(HWND* value) = 0;
 };
 
-winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager g_win10XamlManager = nullptr;
-winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource g_win10XamlSource = nullptr;
-HWND g_win10PopupHwnd = nullptr;
-HWND g_win10XamlSourceHwnd = nullptr;
+// Global state removed - replaced with GetThreadXamlState()
 DWORD g_lastHideTickCount = 0;
 bool g_popupWasVisibleOnLButtonDown = false;
 
@@ -4106,58 +4129,84 @@ void CleanupXamlMedia(winrt::Windows::UI::Xaml::UIElement const& element) {
     } catch (...) {}
 }
 
-void HideWin10Popup(HWND hWnd) {
+void HideWin10PopupInternal(HWND hWnd) {
     if (hWnd && IsWindow(hWnd)) {
         ShowWindow(hWnd, SW_HIDE);
-        if (g_win10XamlSource) {
+        ThreadXamlState& state = GetThreadXamlState();
+        if (state.source) {
             try {
-                auto oldContent = g_win10XamlSource.Content();
+                auto oldContent = state.source.Content();
                 if (oldContent) {
                     CleanupXamlMedia(oldContent);
                     if (auto grid = oldContent.try_as<winrt::Windows::UI::Xaml::Controls::Grid>()) {
                         grid.Children().Clear();
                     }
                 }
-                g_win10XamlSource.Content(nullptr);
+                state.source.Content(nullptr);
             } catch (...) {}
         }
     }
 }
 
+void HideWin10Popup(HWND hWnd) {
+    ThreadXamlState& state = GetThreadXamlState();
+    if (state.popupHwnd && IsWindow(state.popupHwnd)) {
+        PostMessageW(state.popupHwnd, WM_USER + 5002, 0, 0);
+    }
+}
+
 void ApplyWin10Acrylic(HWND hWnd);
+void ShowWin10ForecastPopupInternal(HWND hClock);
+void UpdateWin10PopupInternal(HWND hWnd);
 
 LRESULT CALLBACK Win10PopupWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    ThreadXamlState& state = GetThreadXamlState();
     if (uMsg == WM_ACTIVATE) {
         if (LOWORD(wParam) == WA_INACTIVE) {
             HWND hActive = (HWND)lParam;
-            if (hActive != hWnd && hActive != g_win10XamlSourceHwnd && !IsChild(hWnd, hActive)) {
+            if (hActive != hWnd && hActive != state.sourceHwnd && !IsChild(hWnd, hActive)) {
                 g_lastHideTickCount = GetTickCount();
-                HideWin10Popup(hWnd);
+                PostMessageW(hWnd, WM_USER + 5002, 0, 0); // Hide popup
                 return 0;
             }
         }
-    } else if (uMsg == (WM_USER + 4246)) {
-        if (g_win10XamlSource) {
+    } else if (uMsg == (WM_USER + 5001)) {
+        HWND hClock = (HWND)wParam;
+        ShowWin10ForecastPopupInternal(hClock);
+        return 0;
+    } else if (uMsg == (WM_USER + 5002)) {
+        HideWin10PopupInternal(hWnd);
+        return 0;
+    } else if (uMsg == (WM_USER + 5003)) {
+        UpdateWin10PopupInternal(hWnd);
+        return 0;
+    } else if (uMsg == (WM_USER + 5004)) {
+        if (state.source) {
             try {
-                auto oldContent = g_win10XamlSource.Content();
+                auto oldContent = state.source.Content();
                 if (oldContent) {
                     CleanupXamlMedia(oldContent);
                     if (auto grid = oldContent.try_as<winrt::Windows::UI::Xaml::Controls::Grid>()) {
                         grid.Children().Clear();
                     }
                 }
-                g_win10XamlSource.Content(nullptr);
+                state.source.Content(nullptr);
             } catch (...) {}
             try {
-                XamlActCtxScope actCtxScope; 
-                g_win10XamlSource.Close();
+                state.source.Close();
             } catch (...) {}
-            g_win10XamlSource = nullptr;
+            state.source = nullptr;
         }
-        if (g_win10XamlManager) {
-            g_win10XamlManager = nullptr;
+        if (state.manager) {
+            state.manager = nullptr;
         }
+        state.popupHwnd = nullptr;
+        state.sourceHwnd = nullptr;
         DestroyWindow(hWnd);
+        PostQuitMessage(0);
+        return 0;
+    } else if (uMsg == (WM_USER + 4246)) {
+        SendMessageW(hWnd, WM_USER + 5004, 0, 0);
         return 0;
     } else if (uMsg == WM_SIZE) {
         HWND hXAML = (HWND)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
@@ -4167,14 +4216,14 @@ LRESULT CALLBACK Win10PopupWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
     } else if (uMsg == WM_ERASEBKGND) {
         return 1;
     } else if (uMsg == WM_DESTROY) {
-        if (g_win10XamlSource) {
+        if (state.source) {
             try {
-                g_win10XamlSource.Close();
+                state.source.Close();
             } catch (...) {}
-            g_win10XamlSource = nullptr;
+            state.source = nullptr;
         }
-        g_win10XamlSourceHwnd = NULL;
-        g_win10PopupHwnd = NULL;
+        state.sourceHwnd = NULL;
+        state.popupHwnd = NULL;
     }
     return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
@@ -4194,6 +4243,110 @@ void RegisterWin10PopupClass() {
     wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
     RegisterClassW(&wc);
     registered = true;
+}
+
+DWORD WINAPI PopupThreadProc(LPVOID lpParam) {
+    try {
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+    } catch (...) {
+        if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] PopupThreadProc: init_apartment failed!");
+        return 0;
+    }
+
+    ThreadXamlState& state = GetThreadXamlState();
+    try {
+        state.manager = winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
+    } catch (...) {
+        if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] PopupThreadProc: InitializeForCurrentThread failed!");
+        return 0;
+    }
+
+    RegisterWin10PopupClass();
+
+    DWORD dwExStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+    if (!IsWindows11() && g_useAcrylic) {
+        dwExStyle |= WS_EX_LAYERED | 0x00200000L; // WS_EX_NOREDIRECTIONBITMAP
+    }
+
+    state.popupHwnd = CreateWindowExW(
+        dwExStyle,
+        L"WhWin10ForecastPopupClass", L"",
+        WS_POPUP,
+        0, 0, 100, 100,
+        NULL, NULL, GetModuleHandleW(NULL), NULL
+    );
+
+    if (!state.popupHwnd) {
+        if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] PopupThreadProc: CreateWindowExW failed, error %d", GetLastError());
+        return 0;
+    }
+
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] PopupThreadProc: message loop exited");
+    return 0;
+}
+
+void UpdateWin10PopupInternal(HWND hWnd) {
+    ThreadXamlState& state = GetThreadXamlState();
+    if (state.popupHwnd && IsWindowVisible(state.popupHwnd) && state.source) {
+        try {
+            winrt::Windows::UI::Xaml::Controls::Grid rootGrid;
+            g_selectedDate = L"";
+            g_selectedHour = L"";
+            g_selectedGraphTab = 0;
+            g_graphScrollOffset = -1.0;
+            g_dailyScrollOffset = 0.0;
+            PopulateForecastUI(rootGrid, g_cachedCondition, g_cachedIcon, g_cachedTemp);
+            
+            double panelWidth = 336.0;
+            if (g_forecastDaysFetch >= 14)
+                panelWidth = 570.0;
+            else if (g_forecastDaysFetch >= 10)
+                panelWidth = 492.0;
+            double panelHeight = 365.0;
+
+            std::wstring displayWarning = g_activeWarning;
+            if (!g_mockWeatherAlert.empty()) {
+                displayWarning = g_mockWeatherAlert;
+            }
+            if (!displayWarning.empty()) {
+                panelHeight += 32.0;
+            }
+
+            rootGrid.Width(panelWidth);
+            rootGrid.Height(panelHeight);
+
+            try {
+                auto oldContent = state.source.Content();
+                if (oldContent) {
+                    CleanupXamlMedia(oldContent);
+                }
+            } catch (...) {}
+            state.source.Content(rootGrid);
+
+            // Dynamically resize the HWND if height changed
+            double GetDpiScaleForWindow(HWND);
+            double dpiScale = GetDpiScaleForWindow(state.popupHwnd);
+            int physicalWidth = (int)ceil(panelWidth * dpiScale);
+            int physicalHeight = (int)ceil(panelHeight * dpiScale);
+            RECT rect;
+            if (GetWindowRect(state.popupHwnd, &rect)) {
+                int newY = rect.top;
+                int currentHeight = rect.bottom - rect.top;
+                if (physicalHeight != currentHeight) {
+                    newY = rect.bottom - physicalHeight;
+                }
+                SetWindowPos(state.popupHwnd, NULL, rect.left, newY, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+
+            RedrawWindow(state.popupHwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        } catch (...) {}
+    }
 }
 
 double GetDpiScaleForWindow(HWND hWnd) {
@@ -4239,7 +4392,7 @@ void ApplyWin10Acrylic(HWND hWnd) {
         if (pfnSetWindowCompositionAttribute) {
             ACCENT_POLICY_WEATHER accent = {0};
             accent.State = 4; // ACCENT_ENABLE_ACRYLICBLURBEHIND
-            accent.Flags = 0; // No DWM borders to avoid thick top/left borders!
+            accent.Flags = 2; // Draw thin borders to avoid default thick top/left lines
             DWORD alpha = (g_acrylicOpacity * 255) / 100;
             BOOL isDark = IsSystemDarkMode();
             DWORD bgRgb = isDark ? 0x202020 : 0xE0E0E0;
@@ -4256,17 +4409,27 @@ void ApplyWin10Acrylic(HWND hWnd) {
 
 
 void ShowWin10ForecastPopup(HWND hClock) {
+    ThreadXamlState& state = GetThreadXamlState();
+    if (state.popupHwnd && IsWindow(state.popupHwnd)) {
+        PostMessageW(state.popupHwnd, WM_USER + 5001, (WPARAM)hClock, 0);
+    }
+}
+
+void ShowWin10ForecastPopupInternal(HWND hClock) {
+    ThreadXamlState& state = GetThreadXamlState();
     try {
-        XamlActCtxScope actCtxScope;
-        
+        static thread_local bool winrtInit = []() {
+            try { winrt::init_apartment(winrt::apartment_type::single_threaded); } catch(...) {}
+            return true;
+        }();
+        (void)winrtInit;
+
         RegisterWin10PopupClass();
 
-        if (!g_win10XamlManager) {
+        if (!state.manager) {
             try {
-        XamlActCtxScope actCtxScope;
-                g_win10XamlManager = winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
+                state.manager = winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
             } catch (...) {
-                // Ignore if already initialized on this thread by explorer
             }
         }
 
@@ -4277,10 +4440,17 @@ void ShowWin10ForecastPopup(HWND hClock) {
             panelWidth = 492.0;
 
         double panelHeight = 365.0;
+        std::wstring displayWarning = g_activeWarning;
+        if (!g_mockWeatherAlert.empty()) {
+            displayWarning = g_mockWeatherAlert;
+        }
+        if (!displayWarning.empty()) {
+            panelHeight += 32.0;
+        }
 
         double dpiScale = GetDpiScaleForWindow(hClock);
-        int physicalWidth = (int)(panelWidth * dpiScale);
-        int physicalHeight = (int)(panelHeight * dpiScale);
+        int physicalWidth = (int)ceil(panelWidth * dpiScale);
+        int physicalHeight = (int)ceil(panelHeight * dpiScale);
 
         RECT clockRect;
         GetWindowRect(hClock, &clockRect);
@@ -4347,7 +4517,21 @@ void ShowWin10ForecastPopup(HWND hClock) {
             if (offsetY + physicalHeight > screenHeight - 15) offsetY = screenHeight - physicalHeight - 15;
         }
 
-        if (!g_win10PopupHwnd) {
+        bool needsRecreate = !state.popupHwnd || !IsWindow(state.popupHwnd) || !state.source || !state.sourceHwnd || !IsWindow(state.sourceHwnd);
+        if (!needsRecreate) {
+            try {
+                (void)state.source.Content();
+            } catch (...) {
+                needsRecreate = true;
+            }
+        }
+
+        if (needsRecreate) {
+            if (state.source) { try { state.source.Close(); } catch(...) {} state.source = nullptr; }
+            if (state.popupHwnd && IsWindow(state.popupHwnd)) DestroyWindow(state.popupHwnd);
+            state.popupHwnd = nullptr;
+            state.sourceHwnd = nullptr;
+
             // Include WS_EX_LAYERED for acrylic composition support on Windows 10
             DWORD dwExStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
             if (!IsWindows11() && g_useAcrylic) {
@@ -4357,7 +4541,7 @@ void ShowWin10ForecastPopup(HWND hClock) {
             if (!hOwner) {
                 hOwner = FindWindowW(L"Shell_TrayWnd", NULL);
             }
-            g_win10PopupHwnd = CreateWindowExW(
+            state.popupHwnd = CreateWindowExW(
                 dwExStyle,
                 L"WhWin10ForecastPopupClass", L"",
                 WS_POPUP,
@@ -4365,70 +4549,84 @@ void ShowWin10ForecastPopup(HWND hClock) {
                 hOwner, NULL, GetModuleHandleW(NULL), NULL
             );
 
-            if (g_win10PopupHwnd) {
+            if (state.popupHwnd) {
                 if (!IsWindows11() && g_useAcrylic) {
-                    SetLayeredWindowAttributes(g_win10PopupHwnd, 0, 255, LWA_ALPHA);
+                    SetLayeredWindowAttributes(state.popupHwnd, 0, 255, LWA_ALPHA);
                 }
 
                 // Apply transparency and acrylic-supporting attributes IMMEDIATELY while hidden
                 MARGINS margins = {0, 0, 0, 0};
-                DwmExtendFrameIntoClientArea(g_win10PopupHwnd, &margins);
+                DwmExtendFrameIntoClientArea(state.popupHwnd, &margins);
 
                 if (g_useAcrylic) {
                     if (IsWindows11()) {
                         DWORD backdropType = 4; // DWMSBT_TABBEDWINDOW (Acrylic)
-                        DwmSetWindowAttribute(g_win10PopupHwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+                        DwmSetWindowAttribute(state.popupHwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
                     }
                 }
                 BOOL useDarkMode = IsSystemDarkMode() ? TRUE : FALSE;
-                DwmSetWindowAttribute(g_win10PopupHwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+                DwmSetWindowAttribute(state.popupHwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
 
                 if (IsWindows11()) {
                     DWORD cornerPreference = 2; // DWMWCP_ROUND (rounded corners)
-                    DwmSetWindowAttribute(g_win10PopupHwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPreference, sizeof(cornerPreference));
+                    DwmSetWindowAttribute(state.popupHwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPreference, sizeof(cornerPreference));
                 }
 
-                g_win10XamlSource = winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource();
-                IDesktopWindowXamlSourceNative* nativeSource = nullptr;
-                HRESULT hr = ((::IUnknown*)winrt::get_unknown(g_win10XamlSource))->QueryInterface(
-                    IID_IDesktopWindowXamlSourceNative,
-                    (void**)&nativeSource
-                );
-                if (SUCCEEDED(hr)) {
-                    nativeSource->AttachToWindow(g_win10PopupHwnd);
-                    nativeSource->get_WindowHandle(&g_win10XamlSourceHwnd);
-                    nativeSource->Release();
+                try {
+                    state.source = winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource();
+                    IDesktopWindowXamlSourceNative* nativeSource = nullptr;
+                    HRESULT hr = ((::IUnknown*)winrt::get_unknown(state.source))->QueryInterface(
+                        IID_IDesktopWindowXamlSourceNative,
+                        (void**)&nativeSource
+                    );
+                    if (SUCCEEDED(hr)) {
+                        hr = nativeSource->AttachToWindow(state.popupHwnd);
+                        if (FAILED(hr)) {
+                            nativeSource->Release();
+                            throw winrt::hresult_error(hr);
+                        }
+                        nativeSource->get_WindowHandle(&state.sourceHwnd);
+                        nativeSource->Release();
 
-                    SetWindowPos(g_win10PopupHwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                    InvalidateRect(g_win10PopupHwnd, NULL, TRUE);
-                    UpdateWindow(g_win10PopupHwnd);
+                        SetWindowPos(state.popupHwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                        InvalidateRect(state.popupHwnd, NULL, TRUE);
+                        UpdateWindow(state.popupHwnd);
+                    } else {
+                        throw winrt::hresult_error(hr);
+                    }
+                } catch (...) {
+                    if (state.popupHwnd) DestroyWindow(state.popupHwnd);
+                    state.popupHwnd = nullptr;
+                    state.source = nullptr;
+                    state.sourceHwnd = nullptr;
+                    throw;
                 }
-                SetWindowLongPtrW(g_win10PopupHwnd, GWLP_USERDATA, (LONG_PTR)g_win10XamlSourceHwnd);
-                if (g_win10XamlSourceHwnd) {
-                    SetWindowPos(g_win10XamlSourceHwnd, NULL, 0, 0, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowLongPtrW(state.popupHwnd, GWLP_USERDATA, (LONG_PTR)state.sourceHwnd);
+                if (state.sourceHwnd) {
+                    SetWindowPos(state.sourceHwnd, NULL, 0, 0, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
                 }
             }
         } else {
-            MoveWindow(g_win10PopupHwnd, (int)offsetX, (int)offsetY, physicalWidth, physicalHeight, TRUE);
+            MoveWindow(state.popupHwnd, (int)offsetX, (int)offsetY, physicalWidth, physicalHeight, TRUE);
 
             if (!IsWindows11() && g_useAcrylic) {
-                SetLayeredWindowAttributes(g_win10PopupHwnd, 0, 255, LWA_ALPHA);
+                SetLayeredWindowAttributes(state.popupHwnd, 0, 255, LWA_ALPHA);
             }
 
             MARGINS margins = {0, 0, 0, 0};
-            DwmExtendFrameIntoClientArea(g_win10PopupHwnd, &margins);
+            DwmExtendFrameIntoClientArea(state.popupHwnd, &margins);
 
             if (g_useAcrylic) {
                 if (IsWindows11()) {
                     DWORD backdropType = 4; // DWMSBT_TABBEDWINDOW (Acrylic)
-                    DwmSetWindowAttribute(g_win10PopupHwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+                    DwmSetWindowAttribute(state.popupHwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
                 }
             }
             BOOL useDarkMode = IsSystemDarkMode() ? TRUE : FALSE;
-            DwmSetWindowAttribute(g_win10PopupHwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+            DwmSetWindowAttribute(state.popupHwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
         }
 
-        if (g_win10PopupHwnd && g_win10XamlSource) {
+        if (state.popupHwnd && state.source) {
             if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Reusing existing popup HWND and XamlSource");
             Grid rootGrid;
             g_selectedDate = L"";
@@ -4444,49 +4642,84 @@ void ShowWin10ForecastPopup(HWND hClock) {
 
             if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Setting content");
             try {
-                auto oldContent = g_win10XamlSource.Content();
+                auto oldContent = state.source.Content();
                 if (oldContent) {
                     CleanupXamlMedia(oldContent);
                 }
             } catch (...) {}
-            g_win10XamlSource.Content(rootGrid);
+            state.source.Content(rootGrid);
 
-            if (g_win10XamlSourceHwnd) {
-                ShowWindow(g_win10XamlSourceHwnd, SW_SHOW);
+            if (state.sourceHwnd) {
+                ShowWindow(state.sourceHwnd, SW_SHOW);
             }
             if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Showing window");
-            SetWindowPos(g_win10PopupHwnd, NULL, (int)offsetX, (int)offsetY, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
-            ShowWindow(g_win10PopupHwnd, SW_SHOW);
-            SetForegroundWindow(g_win10PopupHwnd);
-            RedrawWindow(g_win10PopupHwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            SetWindowPos(state.popupHwnd, NULL, (int)offsetX, (int)offsetY, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+            ShowWindow(state.popupHwnd, SW_SHOW);
+            SetForegroundWindow(state.popupHwnd);
+            RedrawWindow(state.popupHwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
             if (g_debugLogs) {
-                Wh_Log(L"[Wh_WeatherHost] Opened Win10 forecast popup at offset (%f, %f) using XAML Island HWND=%p", offsetX, offsetY, g_win10PopupHwnd);
+                Wh_Log(L"[Wh_WeatherHost] Opened Win10 forecast popup at offset (%f, %f) using XAML Island HWND=%p", offsetX, offsetY, state.popupHwnd);
             }
         }
     } catch (const winrt::hresult_error& e) {
         if (g_debugLogs) {
-            Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. WinRT Exception: %s (0x%08X). Falling back to browser...", e.message().c_str(), e.code().value);
+            Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. WinRT Exception: %s (0x%08X).", e.message().c_str(), e.code().value);
         }
+        if (state.source) { try { state.source.Close(); } catch(...) {} state.source = nullptr; }
+        if (state.popupHwnd && IsWindow(state.popupHwnd)) DestroyWindow(state.popupHwnd);
+        state.popupHwnd = nullptr;
+        state.sourceHwnd = nullptr;
     } catch (const std::exception& e) {
         if (g_debugLogs) {
-            Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. Std Exception: %S. Falling back to browser...", e.what());
+            Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. Std Exception: %S.", e.what());
         }
+        if (state.source) { try { state.source.Close(); } catch(...) {} state.source = nullptr; }
+        if (state.popupHwnd && IsWindow(state.popupHwnd)) DestroyWindow(state.popupHwnd);
+        state.popupHwnd = nullptr;
+        state.sourceHwnd = nullptr;
     } catch (...) {
         if (g_debugLogs) {
-            Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. Unknown Exception. Falling back to browser...");
+            Wh_Log(L"[Wh_WeatherHost] Error creating/showing Win10 forecast popup. Unknown Exception.");
         }
+        if (state.source) { try { state.source.Close(); } catch(...) {} state.source = nullptr; }
+        if (state.popupHwnd && IsWindow(state.popupHwnd)) DestroyWindow(state.popupHwnd);
+        state.popupHwnd = nullptr;
+        state.sourceHwnd = nullptr;
     }
 }
 
 void InvalidateClockParentRegion(HWND hWnd) {
-    HWND hParent = GetParent(hWnd);
-    if (hParent) {
-        RECT rcWin;
-        GetWindowRect(hWnd, &rcWin);
-        MapWindowPoints(NULL, hParent, (LPPOINT)&rcWin, 2);
-        InvalidateRect(hParent, &rcWin, TRUE);
-        UpdateWindow(hParent);
+    // Improved parent-chain invalidation by bbmaster123 to perfectly clear visual remnants when resizing/shifting
+    RECT rcWin;
+    GetWindowRect(hWnd, &rcWin);
+    
+    // Expand the invalidation region slightly in all directions to catch and clean 
+    // any remnants, ghost icons, or fragments left behind when the widget shifts or resizes.
+    RECT rcExpanded = rcWin;
+    rcExpanded.left -= 60;
+    rcExpanded.top -= 60;
+    rcExpanded.right += 60;
+    rcExpanded.bottom += 60;
+    
+    // Walk up the parent chain and invalidate/redraw the region on every ancestor
+    HWND hCurr = GetParent(hWnd);
+    while (hCurr) {
+        RECT rcMap = rcExpanded;
+        MapWindowPoints(NULL, hCurr, (LPPOINT)&rcMap, 2);
+        
+        // Force repaint of the background of this ancestor in the specified region
+        RedrawWindow(hCurr, &rcMap, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        
+        hCurr = GetParent(hCurr);
+    }
+    
+    // Also explicitly target Shell_TrayWnd just in case
+    HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+    if (hTaskbar) {
+        RECT rcMap = rcExpanded;
+        MapWindowPoints(NULL, hTaskbar, (LPPOINT)&rcMap, 2);
+        RedrawWindow(hTaskbar, &rcMap, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     }
 }
 
@@ -4529,10 +4762,10 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
     if (uMsg == WM_HOTKEY) {
         if (wParam == 4242) {
             try {
-        XamlActCtxScope actCtxScope;
-                if (g_win10PopupHwnd && IsWindowVisible(g_win10PopupHwnd)) {
+                ThreadXamlState& state = GetThreadXamlState();
+                if (state.popupHwnd && IsWindowVisible(state.popupHwnd)) {
                     g_lastHideTickCount = GetTickCount();
-                    HideWin10Popup(g_win10PopupHwnd);
+                    HideWin10Popup(state.popupHwnd);
                 } else {
                     if (GetTickCount() - g_lastHideTickCount > 250) {
                         ShowWin10ForecastPopup(hWnd);
@@ -4561,7 +4794,6 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
 
     if (uMsg == (WM_USER + 4242)) {
         try {
-        XamlActCtxScope actCtxScope;
             if (ShouldUseXamlTaskbar()) {
                 if (auto button = g_weakXamlWeatherButton.get()) {
                     if (!g_win11FlyoutIsOpen) {
@@ -4617,14 +4849,16 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             }
 
             if (wParam == 1) {
-                if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd)) {
+                ThreadXamlState& state = GetThreadXamlState();
+                if (state.popupHwnd && IsWindow(state.popupHwnd)) {
                     g_lastHideTickCount = GetTickCount();
-                    HideWin10Popup(g_win10PopupHwnd);
+                    HideWin10Popup(state.popupHwnd);
                 }
             } else {
-                if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd) && IsWindowVisible(g_win10PopupHwnd)) {
+                ThreadXamlState& state = GetThreadXamlState();
+                if (state.popupHwnd && IsWindow(state.popupHwnd) && IsWindowVisible(state.popupHwnd)) {
                     g_lastHideTickCount = GetTickCount();
-                    HideWin10Popup(g_win10PopupHwnd);
+                    HideWin10Popup(state.popupHwnd);
                 } else {
                     if (GetTickCount() - g_lastHideTickCount > 250) {
                         ShowWin10ForecastPopup(hWnd);
@@ -4636,36 +4870,9 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
     }
 
     if (uMsg == (WM_USER + 4244)) {
-        if (g_win10PopupHwnd && IsWindowVisible(g_win10PopupHwnd) && g_win10XamlSource) {
-            try {
-        XamlActCtxScope actCtxScope;
-                Grid rootGrid;
-                g_selectedDate = L"";
-                g_selectedHour = L"";
-                g_selectedGraphTab = 0;
-                g_graphScrollOffset = -1.0;
-                g_dailyScrollOffset = 0.0;
-                PopulateForecastUI(rootGrid, g_cachedCondition, g_cachedIcon, g_cachedTemp);
-                
-                double panelWidth = 336.0;
-                if (g_forecastDaysFetch >= 14)
-                    panelWidth = 570.0;
-                else if (g_forecastDaysFetch >= 10)
-                    panelWidth = 492.0;
-                double panelHeight = 365.0;
-
-                rootGrid.Width(panelWidth);
-                rootGrid.Height(panelHeight);
-
-                try {
-                    auto oldContent = g_win10XamlSource.Content();
-                    if (oldContent) {
-                        CleanupXamlMedia(oldContent);
-                    }
-                } catch (...) {}
-                g_win10XamlSource.Content(rootGrid);
-                RedrawWindow(g_win10PopupHwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-            } catch (...) {}
+        ThreadXamlState& state = GetThreadXamlState();
+        if (state.popupHwnd && IsWindow(state.popupHwnd)) {
+            PostMessageW(state.popupHwnd, WM_USER + 5003, 0, 0);
         }
         return 0;
     }
@@ -4763,15 +4970,16 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             return 0;
         } else if (uMsg == WM_WINDOWPOSCHANGED) {
             LRESULT res = DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            InvalidateClockParentRegion(hWnd);
             RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW | RDW_ALLCHILDREN);
             HDC hdc = GetDCEx(hWnd, NULL, DCX_WINDOW | DCX_CACHE);
             if (hdc) {
                 PaintWin10Weather(hWnd, hdc);
                 ReleaseDC(hWnd, hdc);
             }
-            if (g_win10PopupHwnd && IsWindowVisible(g_win10PopupHwnd)) {
+            ThreadXamlState& state = GetThreadXamlState();
+            if (state.popupHwnd && IsWindowVisible(state.popupHwnd)) {
                 try {
-                    XamlActCtxScope actCtxScope;
                     ShowWin10ForecastPopup(hWnd);
                 } catch (...) {}
             }
@@ -4880,7 +5088,8 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             int weatherWidth = g_currentAddedWeatherWidth;
 
             if (pos >= -weatherWidth && pos < 0) {
-                g_popupWasVisibleOnLButtonDown = (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd) && IsWindowVisible(g_win10PopupHwnd));
+                ThreadXamlState& state = GetThreadXamlState();
+                g_popupWasVisibleOnLButtonDown = (state.popupHwnd && IsWindow(state.popupHwnd) && IsWindowVisible(state.popupHwnd));
                 g_win10WeatherPressed = true;
                 InvalidateClockParentRegion(hWnd);
                 RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
@@ -4907,26 +5116,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             }
             return DefSubclassProc(hWnd, uMsg, wParam, lParam);
         } else if (uMsg == (WM_USER + 4243)) {
-            if (g_win10XamlSource) {
-                try {
-        XamlActCtxScope actCtxScope;
-                    if (g_win10XamlSource) {
-                        IDesktopWindowXamlSourceNative* native = nullptr;
-                        IUnknown* pUnk = (IUnknown*)winrt::get_abi(g_win10XamlSource);
-                        if (pUnk && pUnk->QueryInterface(IID_IDesktopWindowXamlSourceNative, (void**)&native) == S_OK) {
-                            HWND hXamlWnd = NULL;
-                            native->get_WindowHandle(&hXamlWnd);
-                            native->Release();
-                            if (hXamlWnd && IsWindow(hXamlWnd)) {
-                                PostMessageW(hXamlWnd, WM_CLOSE, 0, 0);
-                                DestroyWindow(hXamlWnd);
-                            }
-                        }
-                        g_win10XamlSource.Close();
-                    }
-                } catch (...) {}
-            }
-            g_win10XamlSource = nullptr;
+            HideWin10Popup(hWnd);
             return 0;
         }
     } else {
@@ -4947,7 +5137,6 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
                             winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                             [weakGrid]() {
                                 try {
-                                    XamlActCtxScope actCtxScope;
                                     if (auto grid = weakGrid.get()) {
                                         UpdateWeatherXamlElements(grid, g_cachedTemp, g_cachedIcon, g_cachedCondition, g_weatherAcquired);
                                     }
@@ -4989,10 +5178,11 @@ void AlignOverlayWindow() {
             PostMessageW(hTarget, g_msgHotkeyControl, 1, 0); // Register hotkey on UI thread
             
             // Trigger a layout refresh on the tray area and taskbar
+            InvalidateClockParentRegion(hTarget);
             SetWindowPos(hTarget, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
             if (hTaskbar) {
-                SendMessageW(hTaskbar, WM_SIZE, 0, 0);
+                PostMessageW(hTaskbar, WM_SIZE, 0, 0);
             }
             RedrawWindow(hTarget, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
         }
@@ -5027,6 +5217,10 @@ void LoadModConfiguration() {
     PCWSTR city = Wh_GetStringSetting(L"location");
     g_location = city ? city : L"auto";
     Wh_FreeStringSetting(city);
+
+    PCWSTR mockAlertStr = Wh_GetStringSetting(L"mockWeatherAlert");
+    g_mockWeatherAlert = mockAlertStr ? mockAlertStr : L"";
+    Wh_FreeStringSetting(mockAlertStr);
 
     g_useCelsius = Wh_GetIntSetting(L"useCelsius") != 0;
 
@@ -5176,19 +5370,25 @@ void LoadModConfiguration() {
     }
 }
 
-void ForceTaskbarUpdateOriginal() {
-    HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
-    if (hTaskbar) {
-        HWND hReBar =
-            FindWindowExW(hTaskbar, nullptr, L"ReBarWindow32", nullptr);
-        if (hReBar) {
-            HWND hMSTask =
-                FindWindowExW(hReBar, nullptr, L"MSTaskSwWClass", nullptr);
-            if (hMSTask) {
-                SendMessageW(hMSTask, 0x452, 3, 0);
+BOOL CALLBACK ForceTaskbarUpdateCallback(HWND hTaskbar, LPARAM lParam) {
+    WCHAR className[256];
+    if (GetClassNameW(hTaskbar, className, 256)) {
+        if (wcscmp(className, L"Shell_TrayWnd") == 0 || wcscmp(className, L"Shell_SecondaryTrayWnd") == 0) {
+            HWND hReBar = FindWindowExW(hTaskbar, nullptr, L"ReBarWindow32", nullptr);
+            if (hReBar) {
+                HWND hMSTask = FindWindowExW(hReBar, nullptr, L"MSTaskSwWClass", nullptr);
+                if (hMSTask) {
+                    PostMessageW(hMSTask, 0x452, 3, 0);
+                }
             }
+            PostMessageW(hTaskbar, WM_SIZE, 0, 0);
         }
     }
+    return TRUE;
+}
+
+void ForceTaskbarUpdateOriginal() {
+    EnumWindows(ForceTaskbarUpdateCallback, 0);
 }
 
 
@@ -5228,6 +5428,11 @@ BOOL Wh_ModInit() {
 
     LoadModConfiguration();
 
+    // Create dedicated popup STA thread
+    g_hPopupThread = CreateThread(NULL, 0, PopupThreadProc, NULL, 0, &g_dwPopupThreadId);
+
+    AlignOverlayWindow();
+
     g_bThreadShouldTerm = false;
 
     // Background weather crawl
@@ -5235,8 +5440,7 @@ BOOL Wh_ModInit() {
         CreateThread(NULL, 0, QueryWeatherPipeline, NULL, 0, &g_dwThreadId);
 
     // Watchdog thread for rapid, automated taskbar subclass injection/maintenance
-    g_hWatchdogThread =
-        g_hWatchdogThread = CreateThread(NULL, 0, SubclassWatchdogThread, NULL, 0, NULL);
+    g_hWatchdogThread = CreateThread(NULL, 0, SubclassWatchdogThread, NULL, 0, NULL);
 
     // Initial check if taskbar module is loaded or intercept via library load
     // hooks
@@ -5259,16 +5463,10 @@ BOOL Wh_ModInit() {
         }
     }
 
-    AlignOverlayWindow();
-
-    // Force a visual state update on the taskbar to immediately trigger our
-    // subclass hook
     HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
     if (hTaskbar) {
-        SendMessageTimeoutW(hTaskbar, WM_SETTINGCHANGE, 0,
-                            (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, NULL);
-        SendMessageTimeoutW(hTaskbar, WM_THEMECHANGED, 0, 0,
-                            SMTO_ABORTIFHUNG, 1000, NULL);
+        PostMessageW(hTaskbar, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet");
+        PostMessageW(hTaskbar, WM_THEMECHANGED, 0, 0);
     }
 
     // Force tasks to refresh immediately so scan triggers without clicking
@@ -5282,6 +5480,14 @@ BOOL Wh_ModInit() {
 }
 
 // Windhawk mod Exit Point
+BOOL CALLBACK CleanupXamlWindowsCallback(HWND hWnd, LPARAM lParam) {
+    WCHAR className[256];
+    if (GetClassNameW(hWnd, className, 256) && wcscmp(className, L"WhWin10ForecastPopupClass") == 0) {
+        SendMessageW(hWnd, WM_USER + 4246, 0, 0);
+    }
+    return TRUE;
+}
+
 void Wh_ModUninit() {
     if (!g_isShellProcess) {
         return;
@@ -5324,23 +5530,8 @@ void Wh_ModUninit() {
     }
     LeaveCriticalSection(&g_subclassLock);
 
-    // 2. Clean up XAML and its child windows directly on the UI thread
-    if (g_win10PopupHwnd && IsWindow(g_win10PopupHwnd)) {
-        SendMessageW(g_win10PopupHwnd, WM_USER + 4246, 0, 0);
-        g_win10PopupHwnd = nullptr;
-    }
-    
-    // Safety fallback in case the window didn't clean them up
-    if (g_win10XamlSource) {
-        try {
-            XamlActCtxScope actCtxScope;
-            g_win10XamlSource.Close();
-        } catch (...) {}
-        g_win10XamlSource = nullptr;
-    }
-    if (g_win10XamlManager) {
-        g_win10XamlManager = nullptr;
-    }
+    // 2. Clean up XAML and its child windows directly across all threads
+    EnumWindows(CleanupXamlWindowsCallback, 0);
 
     // 3. Wait for background threads to terminate
     if (g_hQueryThread) {
@@ -5355,15 +5546,15 @@ void Wh_ModUninit() {
         g_hWatchdogThread = NULL;
     }
 
+    if (g_hPopupThread) {
+        WaitForSingleObject(g_hPopupThread, 3000);
+        CloseHandle(g_hPopupThread);
+        g_hPopupThread = NULL;
+    }
+
     if (g_hForceUpdateEvent) {
         CloseHandle(g_hForceUpdateEvent);
         g_hForceUpdateEvent = NULL;
-    }
-
-    if (g_hXamlActCtx != INVALID_HANDLE_VALUE) {
-        ReleaseActCtx(g_hXamlActCtx);
-        g_hXamlActCtx = INVALID_HANDLE_VALUE;
-        g_xamlActCtxInitialized = false;
     }
 
     // Give time for window destruction messages to process before unregistering the class
@@ -5372,7 +5563,6 @@ void Wh_ModUninit() {
 
 
     try {
-        XamlActCtxScope actCtxScope;
         g_activeFlyout = nullptr;
     } catch (...) {}
 
@@ -5384,7 +5574,6 @@ void Wh_ModUninit() {
     }
     if (targetGrid) {
         try {
-        XamlActCtxScope actCtxScope;
             auto dispatcher = targetGrid.Dispatcher();
             if (dispatcher.HasThreadAccess()) {
                 if (auto parent = targetGrid.Parent().try_as<Grid>()) {
@@ -5396,7 +5585,6 @@ void Wh_ModUninit() {
                     winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                     [weakGrid]() {
                         try {
-                            XamlActCtxScope actCtxScope;
                             if (auto grid = weakGrid.get()) {
                                 if (auto parent = grid.Parent().try_as<Grid>()) {
                                     RemoveInjectedFromGrid(parent);
@@ -5406,7 +5594,6 @@ void Wh_ModUninit() {
                         }
                     });
                 try {
-        XamlActCtxScope actCtxScope;
                     // action.get(); // Wait synchronously for completion instead of timing out
                 } catch (...) {
                 }
