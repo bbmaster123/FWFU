@@ -12,8 +12,8 @@
 /*
 - location: "auto"
   $name: Location (City Name or "auto" for IP-based Geolocation)
-- mockWeatherAlert: ""
-  $name: Mock Weather Alert (Custom text to display as an advisory banner, e.g. "Air Quality Alert - Wildfire Smoke". Leave blank for live alerts)
+- showWeatherAlerts: true
+  $name: Show Weather Alerts Banner
 - useCelsius: true
   $name: Use Metric System (°C, km/h)
   $description: Uncheck to use Imperial System (°F, mph)
@@ -182,7 +182,26 @@ std::wstring g_cachedTemp = L"--°F";
 std::wstring g_cachedCondition = L"Loading";
 std::wstring g_cachedIcon = L"⏳";
 std::wstring g_activeWarning = L"";
-std::wstring g_mockWeatherAlert = L"";
+bool g_showWeatherAlerts = true;
+
+std::vector<std::wstring> g_activeWarnings;
+int g_currentWarningIndex = 0;
+
+void UpdateActiveWarningText() {
+    if (g_activeWarnings.empty() || !g_showWeatherAlerts) {
+        g_activeWarning = L"";
+        return;
+    }
+    if (g_currentWarningIndex < 0 || g_currentWarningIndex >= (int)g_activeWarnings.size()) {
+        g_currentWarningIndex = 0;
+    }
+    std::wstring text = g_activeWarnings[g_currentWarningIndex];
+    if (g_activeWarnings.size() > 1) {
+        text += L" (" + std::to_wstring(g_currentWarningIndex + 1) + L"/" + std::to_wstring(g_activeWarnings.size()) + L")";
+    }
+    g_activeWarning = text;
+}
+
 std::wstring g_displayCity = L"Detecting...";
 double g_cachedLatitude = 40.7128;  // New York Default
 double g_cachedLongitude = -74.0060;
@@ -831,10 +850,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
     }
 
     double panelHeight = 365.0;
-    std::wstring displayWarning = g_activeWarning;
-    if (!g_mockWeatherAlert.empty()) {
-        displayWarning = g_mockWeatherAlert;
-    }
+    std::wstring displayWarning = g_showWeatherAlerts ? g_activeWarning : L"";
     if (!displayWarning.empty()) {
         panelHeight += 32.0;
     }
@@ -918,6 +934,17 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
         warningBar.Background(SolidColorBrush{warningBgColor});
         warningBar.BorderBrush(SolidColorBrush{warningBorderColor});
         warningBar.BorderThickness(Thickness{1, 1, 1, 1});
+        
+        if (g_activeWarnings.size() > 1) {
+            auto weakRoot = winrt::make_weak(rootGrid);
+            warningBar.Tapped([weakRoot, condition, currentIcon, currentTemp, customPrecip, customHumidity, customWind](winrt::Windows::Foundation::IInspectable const&, winrt::Windows::UI::Xaml::Input::TappedRoutedEventArgs const&) {
+                g_currentWarningIndex = (g_currentWarningIndex + 1) % g_activeWarnings.size();
+                UpdateActiveWarningText();
+                if (auto root = weakRoot.get()) {
+                    PopulateForecastUI(root, condition, currentIcon, currentTemp, false, false, customPrecip, customHumidity, customWind);
+                }
+            });
+        }
 
         StackPanel warningStack;
         warningStack.Orientation(Orientation::Horizontal);
@@ -2882,7 +2909,6 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                 RequestHttpData(L"api.open-meteo.com", pathBuf, true);
 
             if (!forecastJson.empty()) {
-                std::wstring alertStr = L"";
                 try {
                     wchar_t alertPath[512];
                     swprintf(alertPath, L"/v3/alerts/headlines?geocode=%.4f,%.4f&format=json&language=en-US&apiKey=e1f10a1e78da46f5b10a1e78da96f525", g_cachedLatitude, g_cachedLongitude);
@@ -2891,16 +2917,32 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                         Wh_Log(L"[EP_WeatherHost] Weather.com Alerts API returned %d chars: %.100s", (int)alertsJson.length(), alertsJson.c_str());
                     }
                     if (!alertsJson.empty()) {
-                        std::wstring alertsArray = ExtractJSONArray(alertsJson, L"alerts");
-                        if (!alertsArray.empty() && alertsArray.length() > 5) {
-                            alertStr = ExtractJSONValue(alertsArray, L"eventDescription");
-                            if (alertStr.empty()) {
-                                alertStr = ExtractJSONValue(alertsArray, L"headlineText");
+                        g_activeWarnings.clear();
+                        g_currentWarningIndex = 0;
+                        if (alertsJson.length() > 20) {
+                            size_t countPos = alertsJson.find(L"\"detailKey\"");
+                            while (countPos != std::wstring::npos) {
+                                size_t nextPos = alertsJson.find(L"\"detailKey\"", countPos + 1);
+                                std::wstring objStr = alertsJson.substr(countPos, nextPos == std::wstring::npos ? std::wstring::npos : nextPos - countPos);
+                                
+                                std::wstring eventDesc = ExtractJSONValue(objStr, L"eventDescription");
+                                if (eventDesc.empty()) {
+                                    eventDesc = ExtractJSONValue(objStr, L"headlineText");
+                                }
+                                if (!eventDesc.empty()) {
+                                    g_activeWarnings.push_back(eventDesc);
+                                }
+                                
+                                countPos = nextPos;
                             }
+                            
+                            UpdateActiveWarningText();
+                            
                             if (g_debugLogs) {
-                                Wh_Log(L"[EP_WeatherHost] Found active alert: %s", alertStr.c_str());
+                                Wh_Log(L"[EP_WeatherHost] Found %d active alerts", (int)g_activeWarnings.size());
                             }
                         } else {
+                            UpdateActiveWarningText();
                             if (g_debugLogs) {
                                 Wh_Log(L"[EP_WeatherHost] No active alerts in the array");
                             }
@@ -2941,39 +2983,44 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                 double tempVal = !tempStr.empty() ? wcstod(tempStr.c_str(), NULL) : 0.0;
                 double windVal = !windSpeedStr.empty() ? wcstod(windSpeedStr.c_str(), NULL) : 0.0;
 
-                if (alertStr.empty()) {
+                if (g_activeWarnings.empty()) {
+                    std::wstring fallbackAlert = L"";
                     if (codeVal == 99 || codeVal == 96) {
-                        alertStr = L"Severe Thunderstorm Warning";
+                        fallbackAlert = L"Severe Thunderstorm Warning";
                     } else if (codeVal == 95) {
-                        alertStr = L"Thunderstorm Advisory";
+                        fallbackAlert = L"Thunderstorm Advisory";
                     } else if (codeVal == 82) {
-                        alertStr = L"Torrential Rain Advisory";
+                        fallbackAlert = L"Torrential Rain Advisory";
                     } else if (codeVal == 75 || codeVal == 86) {
-                        alertStr = L"Heavy Snow Warning";
+                        fallbackAlert = L"Heavy Snow Warning";
                     } else if (codeVal == 73 || codeVal == 85) {
-                        alertStr = L"Snow Advisory";
+                        fallbackAlert = L"Snow Advisory";
                     } else if (codeVal == 71) {
-                        alertStr = L"Winter Weather Advisory";
+                        fallbackAlert = L"Winter Weather Advisory";
                     } else if (codeVal == 67) {
-                        alertStr = L"Ice Storm Warning";
+                        fallbackAlert = L"Ice Storm Warning";
                     } else if (codeVal == 66) {
-                        alertStr = L"Freezing Rain Advisory";
+                        fallbackAlert = L"Freezing Rain Advisory";
                     } else if (codeVal == 65) {
-                        alertStr = L"Heavy Rain Advisory";
+                        fallbackAlert = L"Heavy Rain Advisory";
                     } else if (codeVal == 45 || codeVal == 48) {
-                        alertStr = L"Dense Fog Advisory";
+                        fallbackAlert = L"Dense Fog Advisory";
                     } else if (tempVal >= 40.0) {
-                        alertStr = L"Extreme Heat Warning";
+                        fallbackAlert = L"Extreme Heat Warning";
                     } else if (tempVal >= 35.0) {
-                        alertStr = L"Heat Advisory";
+                        fallbackAlert = L"Heat Advisory";
                     } else if (tempVal <= -15.0) {
-                        alertStr = L"Extreme Cold Warning";
+                        fallbackAlert = L"Extreme Cold Warning";
                     } else if (tempVal <= -5.0) {
-                        alertStr = L"Winter Weather Advisory";
+                        fallbackAlert = L"Winter Weather Advisory";
                     } else if (windVal >= 60.0) {
-                        alertStr = L"High Wind Warning";
+                        fallbackAlert = L"High Wind Warning";
                     } else if (windVal >= 40.0) {
-                        alertStr = L"Wind Advisory";
+                        fallbackAlert = L"Wind Advisory";
+                    }
+                    if (!fallbackAlert.empty()) {
+                        g_activeWarnings.push_back(fallbackAlert);
+                        UpdateActiveWarningText();
                     }
                 }
 
@@ -3190,7 +3237,6 @@ DWORD WINAPI QueryWeatherPipeline(LPVOID lpParam) {
                 g_cachedWindSpeed = formattedWindSpeed;
                 g_cachedPrecipProb = currentPrecipProb;
                 g_cachedHumidity = humidityStr + L"%";
-                g_activeWarning = alertStr;
                 g_forecastAcquired = true;
                 LeaveCriticalSection(&g_forecastLock);
 
@@ -4303,10 +4349,7 @@ void UpdateWin10PopupInternal(HWND hWnd) {
                 panelWidth = 492.0;
             double panelHeight = 365.0;
 
-            std::wstring displayWarning = g_activeWarning;
-            if (!g_mockWeatherAlert.empty()) {
-                displayWarning = g_mockWeatherAlert;
-            }
+            std::wstring displayWarning = g_showWeatherAlerts ? g_activeWarning : L"";
             if (!displayWarning.empty()) {
                 panelHeight += 32.0;
             }
@@ -4433,10 +4476,7 @@ void ShowWin10ForecastPopupInternal(HWND hClock) {
             panelWidth = 492.0;
 
         double panelHeight = 365.0;
-        std::wstring displayWarning = g_activeWarning;
-        if (!g_mockWeatherAlert.empty()) {
-            displayWarning = g_mockWeatherAlert;
-        }
+        std::wstring displayWarning = g_showWeatherAlerts ? g_activeWarning : L"";
         if (!displayWarning.empty()) {
             panelHeight += 32.0;
         }
@@ -5211,9 +5251,7 @@ void LoadModConfiguration() {
     g_location = city ? city : L"auto";
     Wh_FreeStringSetting(city);
 
-    PCWSTR mockAlertStr = Wh_GetStringSetting(L"mockWeatherAlert");
-    g_mockWeatherAlert = mockAlertStr ? mockAlertStr : L"";
-    Wh_FreeStringSetting(mockAlertStr);
+    g_showWeatherAlerts = Wh_GetIntSetting(L"showWeatherAlerts") != 0;
 
     g_useCelsius = Wh_GetIntSetting(L"useCelsius") != 0;
 
