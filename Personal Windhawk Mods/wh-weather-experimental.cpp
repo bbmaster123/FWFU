@@ -4284,6 +4284,23 @@ void RegisterWin10PopupClass() {
     registered = true;
 }
 
+BOOL CALLBACK HideCoreWindowCallback(HWND hwnd, LPARAM lParam) {
+    wchar_t className[256];
+    if (GetClassNameW(hwnd, className, 256)) {
+        if (wcscmp(className, L"Windows.UI.Core.CoreWindow") == 0) {
+            wchar_t title[256];
+            if (GetWindowTextW(hwnd, title, 256)) {
+                if (wcscmp(title, L"DesktopWindowXamlSource") == 0) {
+                    ShowWindow(hwnd, SW_HIDE);
+                    LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+                    SetWindowLongW(hwnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+                }
+            }
+        }
+    }
+    return TRUE;
+}
+
 DWORD WINAPI PopupThreadProc(LPVOID lpParam) {
     try {
         winrt::init_apartment(winrt::apartment_type::single_threaded);
@@ -4295,6 +4312,7 @@ DWORD WINAPI PopupThreadProc(LPVOID lpParam) {
     ThreadXamlState& state = GetThreadXamlState();
     try {
         state.manager = winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
+        EnumThreadWindows(GetCurrentThreadId(), HideCoreWindowCallback, 0);
     } catch (...) {
         if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] PopupThreadProc: InitializeForCurrentThread failed!");
         return 0;
@@ -4465,6 +4483,7 @@ void ShowWin10ForecastPopupInternal(HWND hClock) {
         if (!state.manager) {
             try {
                 state.manager = winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
+                EnumThreadWindows(GetCurrentThreadId(), HideCoreWindowCallback, 0);
             } catch (...) {
             }
         }
