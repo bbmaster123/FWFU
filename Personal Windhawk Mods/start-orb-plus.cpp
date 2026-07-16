@@ -3,7 +3,7 @@
 // @name           Start Orb Plus
 // @description    Windows 7 style Start Orb overlay
 // @version        1.0.0
-// @author         Bbmaster123/Gemini
+// @author         Bbmaster123/AI
 // @include        explorer.exe
 // @architecture   x86-64
 // @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi -lcomctl32 -lole32 -loleaut32 -lruntimeobject
@@ -12,7 +12,7 @@
 /*
 ![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/start-orb.gif)
 
-Replaces start button with custom start button on Windows 10 and 11 using a GDI overlay. Users supply 3 Images:
+Replaces start button with a custom start button on Windows 10 and 11 using a GDI overlay. Users supply 3 Images:
 1. Idle
 2. Hover
 3. Pressed
@@ -24,20 +24,28 @@ Replaces start button with custom start button on Windows 10 and 11 using a GDI 
 - Min and Max opacity for animation states
 - Option to hide original start button icon. Disable If you would like to use a semi-transparent overlay effect.
 - Works in all taskbar orientations  
-- Compatible with styler mods Explorerpatcher 
+- Compatible with styler mods and Explorerpatcher 
 - Tested on builds ranging from 19045 to 26300
 */
 // ==/WindhawkModReadme==
 // ==WindhawkModSettings==
 /*
 - orbNormal: "C:\\Users\\Admin\\Pictures\\orbs\\orbIdle.png"
+  $name: Idle
 - orbHover: "C:\\Users\\Admin\\Pictures\\orbs\\orbHover.png"
+  $name: Hover
 - orbPressed: "C:\\Users\\Admin\\Pictures\\orbs\\orbPressed.png"
+  $name: Pressed
 - orbSizeX: 72
+  $name: Width
 - orbSizeY: 72
+  $name: Height
 - offsetX: 0
+  $name: Horizontal Offset
 - offsetY: 0
+  $name: Vertical Offset
 - animSpeed: 85
+  $name: Animation Speed
 - minOpacity: 255
 - maxOpacity: 255
 - hideDefault: true
@@ -51,6 +59,7 @@ Replaces start button with custom start button on Windows 10 and 11 using a GDI 
 #include <windhawk_utils.h>
 #include <windows.h>
 #include <atomic>
+
 
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
@@ -82,6 +91,11 @@ ULONG_PTR g_gdiToken = 0;
 Image* g_imgNormal = nullptr;
 Image* g_imgHover = nullptr;
 Image* g_imgPressed = nullptr;
+
+std::wstring g_tempNormal;
+std::wstring g_tempHover;
+std::wstring g_tempPressed;
+uint64_t g_downloadJobId = 0;
 
 float g_fadeAlpha = 0.0f;
 int g_state = 0;
@@ -132,18 +146,12 @@ void CollapseStartButtonIcon(FrameworkElement element, bool hide) {
     if (!element)
         return;
 
-    if (winrt::get_class_name(element) ==
-        L"Microsoft.UI.Xaml.Controls.AnimatedVisualPlayer") {
-        element.Visibility(hide ? Visibility::Collapsed : Visibility::Visible);
-        return;
-    }
-
     int count = Media::VisualTreeHelper::GetChildrenCount(element);
     for (int i = 0; i < count; i++) {
         auto child = Media::VisualTreeHelper::GetChild(element, i)
                          .try_as<FrameworkElement>();
         if (child) {
-            CollapseStartButtonIcon(child, hide);
+            child.Opacity(hide ? 0.0 : 1.0);
         }
     }
 }
@@ -172,7 +180,7 @@ bool ApplyStyle(XamlRoot xamlRoot) {
         hide = g_settings.hideDefault;
         LeaveCriticalSection(&g_cs);
 
-        CollapseStartButtonIcon(startButton, hide || g_unloading_win11);
+        CollapseStartButtonIcon(startButton, hide && !g_unloading_win11);
     }
     return true;
 }
@@ -382,12 +390,115 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName,
 
 // -------------------- IMAGE --------------------
 
-Image* LoadOne(PCWSTR path) {
+bool IsURL(PCWSTR path, std::wstring& outNormalizedURL) {
+    if (!path || !path[0])
+        return false;
+
+    if (_wcsnicmp(path, L"http://", 7) == 0 ||
+        _wcsnicmp(path, L"https://", 8) == 0) {
+        outNormalizedURL = path;
+        return true;
+    }
+
+    if (wcsstr(path, L"://") != nullptr) {
+        outNormalizedURL = path;
+        return true;
+    }
+
+    if (wcsncmp(path, L"//", 2) == 0) {
+        outNormalizedURL = L"https:" + std::wstring(path);
+        return true;
+    }
+
+    if (_wcsnicmp(path, L"www.", 4) == 0) {
+        outNormalizedURL = L"https://" + std::wstring(path);
+        return true;
+    }
+
+    if (path[1] != L':' && wcschr(path, L'\\') == nullptr) {
+        PCWSTR dot = wcschr(path, L'.');
+        PCWSTR slash = wcschr(path, L'/');
+        if (dot && slash && dot < slash) {
+            outNormalizedURL = L"https://" + std::wstring(path);
+            return true;
+        } else if (slash != nullptr &&
+                   (wcsstr(path, L".com") || wcsstr(path, L".net") ||
+                    wcsstr(path, L".org") || wcsstr(path, L".io") ||
+                    wcsstr(path, L".co"))) {
+            outNormalizedURL = L"https://" + std::wstring(path);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+struct DownloadJob {
+    uint64_t jobId;
+    std::wstring urlNormal;
+    std::wstring urlHover;
+    std::wstring urlPressed;
+};
+
+bool DownloadURLToTempFile(PCWSTR url, std::wstring& outTempFile) {
+    HMODULE hUrlmon = LoadLibraryW(L"urlmon.dll");
+    if (!hUrlmon)
+        return false;
+
+    typedef HRESULT(WINAPI * URLDownloadToFileW_t)(LPUNKNOWN, LPCWSTR, LPCWSTR,
+                                                   DWORD, LPBINDSTATUSCALLBACK);
+    auto pURLDownloadToFileW =
+        (URLDownloadToFileW_t)GetProcAddress(hUrlmon, "URLDownloadToFileW");
+    if (!pURLDownloadToFileW) {
+        FreeLibrary(hUrlmon);
+        return false;
+    }
+
+    WCHAR tempPath[MAX_PATH];
+    WCHAR tempFile[MAX_PATH];
+    if (GetTempPathW(MAX_PATH, tempPath) == 0) {
+        FreeLibrary(hUrlmon);
+        return false;
+    }
+
+    if (GetTempFileNameW(tempPath, L"orb", 0, tempFile) == 0) {
+        FreeLibrary(hUrlmon);
+        return false;
+    }
+
+    DeleteFileW(tempFile);
+
+    HRESULT hr = pURLDownloadToFileW(NULL, url, tempFile, 0, NULL);
+    FreeLibrary(hUrlmon);
+
+    if (SUCCEEDED(hr)) {
+        outTempFile = tempFile;
+        return true;
+    }
+    return false;
+}
+
+Image* LoadOne(PCWSTR path, std::wstring& outTempPath) {
     if (!path || !path[0])
         return nullptr;
-    Image* img = Image::FromFile(path);
+
+    PCWSTR loadPath = path;
+    std::wstring normalizedURL;
+    if (IsURL(path, normalizedURL)) {
+        if (DownloadURLToTempFile(normalizedURL.c_str(), outTempPath)) {
+            loadPath = outTempPath.c_str();
+        } else {
+            return nullptr;
+        }
+    }
+
+    Image* img = Image::FromFile(loadPath);
     if (!img || img->GetLastStatus() != Ok) {
         delete img;
+        if (!outTempPath.empty()) {
+            DeleteFileW(outTempPath.c_str());
+            outTempPath.clear();
+        }
         return nullptr;
     }
     return img;
@@ -399,25 +510,129 @@ void CleanImages() {
     delete g_imgHover;
     delete g_imgPressed;
     g_imgNormal = g_imgHover = g_imgPressed = nullptr;
+
+    if (!g_tempNormal.empty()) {
+        DeleteFileW(g_tempNormal.c_str());
+        g_tempNormal.clear();
+    }
+    if (!g_tempHover.empty()) {
+        DeleteFileW(g_tempHover.c_str());
+        g_tempHover.clear();
+    }
+    if (!g_tempPressed.empty()) {
+        DeleteFileW(g_tempPressed.c_str());
+        g_tempPressed.clear();
+    }
     LeaveCriticalSection(&g_cs);
 }
 
-void LoadImages() {
-    CleanImages();
+DWORD WINAPI DownloadThreadProc(LPVOID lpParam) {
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+    DownloadJob* job = (DownloadJob*)lpParam;
+    if (!job) {
+        CoUninitialize();
+        return 0;
+    }
+
+    std::wstring tempNormal;
+    std::wstring tempHover;
+    std::wstring tempPressed;
+
+    Image* imgNormal = LoadOne(job->urlNormal.c_str(), tempNormal);
+    Image* imgHover = LoadOne(job->urlHover.c_str(), tempHover);
+    Image* imgPressed = LoadOne(job->urlPressed.c_str(), tempPressed);
 
     EnterCriticalSection(&g_cs);
+    if (job->jobId != g_downloadJobId) {
+        delete imgNormal;
+        delete imgHover;
+        delete imgPressed;
+        if (!tempNormal.empty()) {
+            DeleteFileW(tempNormal.c_str());
+        }
+        if (!tempHover.empty()) {
+            DeleteFileW(tempHover.c_str());
+        }
+        if (!tempPressed.empty()) {
+            DeleteFileW(tempPressed.c_str());
+        }
+        LeaveCriticalSection(&g_cs);
+        delete job;
+        CoUninitialize();
+        return 0;
+    }
+
+    if (g_imgNormal) {
+        delete g_imgNormal;
+        g_imgNormal = nullptr;
+    }
+    if (g_imgHover) {
+        delete g_imgHover;
+        g_imgHover = nullptr;
+    }
+    if (g_imgPressed) {
+        delete g_imgPressed;
+        g_imgPressed = nullptr;
+    }
+
+    if (!g_tempNormal.empty()) {
+        DeleteFileW(g_tempNormal.c_str());
+        g_tempNormal.clear();
+    }
+    if (!g_tempHover.empty()) {
+        DeleteFileW(g_tempHover.c_str());
+        g_tempHover.clear();
+    }
+    if (!g_tempPressed.empty()) {
+        DeleteFileW(g_tempPressed.c_str());
+        g_tempPressed.clear();
+    }
+
+    g_imgNormal = imgNormal;
+    g_imgHover = imgHover;
+    g_imgPressed = imgPressed;
+
+    g_tempNormal = tempNormal;
+    g_tempHover = tempHover;
+    g_tempPressed = tempPressed;
+    LeaveCriticalSection(&g_cs);
+
+    delete job;
+
+    if (g_hOrbWnd) {
+        PostMessage(g_hOrbWnd, WM_USER + 1, 0, 0);
+    }
+
+    CoUninitialize();
+    return 0;
+}
+
+void LoadImages() {
+    EnterCriticalSection(&g_cs);
+    g_downloadJobId++;
+    uint64_t currentJobId = g_downloadJobId;
     PCWSTR pathNormal = Wh_GetStringSetting(L"orbNormal");
     PCWSTR pathHover = Wh_GetStringSetting(L"orbHover");
     PCWSTR pathPressed = Wh_GetStringSetting(L"orbPressed");
 
-    g_imgNormal = LoadOne(pathNormal);
-    g_imgHover = LoadOne(pathHover);
-    g_imgPressed = LoadOne(pathPressed);
+    DownloadJob* job = new DownloadJob();
+    job->jobId = currentJobId;
+    job->urlNormal = pathNormal ? pathNormal : L"";
+    job->urlHover = pathHover ? pathHover : L"";
+    job->urlPressed = pathPressed ? pathPressed : L"";
 
     Wh_FreeStringSetting(pathNormal);
     Wh_FreeStringSetting(pathHover);
     Wh_FreeStringSetting(pathPressed);
     LeaveCriticalSection(&g_cs);
+
+    HANDLE hThread = CreateThread(NULL, 0, DownloadThreadProc, job, 0, NULL);
+    if (hThread) {
+        CloseHandle(hThread);
+    } else {
+        delete job;
+    }
 }
 
 // -------------------- START BUTTON --------------------
@@ -446,27 +661,52 @@ HWND FindStartButton() {
 #endif
 
 bool IsStartMenuVisible() {
-    HWND hStartMenu = FindWindow(L"Windows.UI.Core.CoreWindow", L"Start");
-    if (hStartMenu && IsWindowVisible(hStartMenu)) {
+    auto isVisible = [](HWND hwnd) -> bool {
+        if (!hwnd || !IsWindowVisible(hwnd))
+            return false;
+        BOOL cloaked = FALSE;
+        if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked,
+                                            sizeof(cloaked))) &&
+            cloaked) {
+            return false;
+        }
         return true;
-    }
-    HWND hClassicStart = FindWindow(L"ClassicShell.CMenuWin", NULL);
-    if (hClassicStart && IsWindowVisible(hClassicStart)) {
+    };
+
+    if (isVisible(FindWindow(L"Windows.UI.Core.CoreWindow", L"Start")))
         return true;
-    }
-    HWND hOpenStart = FindWindow(L"OpenShell.CMenuWin", NULL);
-    if (hOpenStart && IsWindowVisible(hOpenStart)) {
+    if (isVisible(FindWindow(L"Windows.UI.Core.CoreWindow",
+                             L"StartMenuExperienceHost")))
         return true;
-    }
-    HWND hWin11Start =
-        FindWindow(L"Windows.UI.Core.CoreWindow", L"StartMenuExperienceHost");
-    if (hWin11Start && IsWindowVisible(hWin11Start)) {
+    if (isVisible(FindWindow(L"ClassicShell.CMenuWin", NULL)))
         return true;
-    }
+    if (isVisible(FindWindow(L"OpenShell.CMenuWin", NULL)))
+        return true;
+
     return false;
 }
 
+void SetWindowThemeHelper(HWND hWnd,
+                          LPCWSTR pszSubAppName,
+                          LPCWSTR pszSubIdList) {
+    HMODULE hUxTheme = GetModuleHandle(L"uxtheme.dll");
+    if (!hUxTheme) {
+        hUxTheme = LoadLibrary(L"uxtheme.dll");
+    }
+    if (hUxTheme) {
+        typedef HRESULT(WINAPI * SetWindowTheme_t)(HWND, LPCWSTR, LPCWSTR);
+        auto pSetWindowTheme =
+            (SetWindowTheme_t)GetProcAddress(hUxTheme, "SetWindowTheme");
+        if (pSetWindowTheme) {
+            pSetWindowTheme(hWnd, pszSubAppName, pszSubIdList);
+        }
+    }
+}
+
 void UpdateStartButtonVisibility() {
+    if (g_isUnloading)
+        return;
+
     if (g_isWindows11 && g_taskbarViewDllLoaded) {
         HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
         if (hTaskbarWnd)
@@ -483,23 +723,29 @@ void UpdateStartButtonVisibility() {
     hide = g_settings.hideDefault;
     LeaveCriticalSection(&g_cs);
 
-    LONG_PTR exStyle = GetWindowLongPtr(g_hStart, GWL_EXSTYLE);
     if (hide) {
-        if (!(exStyle & WS_EX_LAYERED)) {
-            SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
-        }
-        // Alpha 1 makes it completely transparent but keeps it 100%
-        // clickable/hoverable!
-        SetLayeredWindowAttributes(g_hStart, 0, 1, LWA_ALPHA);
+        SetWindowThemeHelper(g_hStart, L"", L"");
+        EnumChildWindows(
+            g_hStart,
+            [](HWND hChild, LPARAM) -> BOOL {
+                ShowWindow(hChild, SW_HIDE);
+                return TRUE;
+            },
+            0);
     } else {
-        if (exStyle & WS_EX_LAYERED) {
-            SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
-            // Fully redraw the window to bring back its original theme/icon
-            RedrawWindow(
-                g_hStart, NULL, NULL,
-                RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
-        }
+        SetWindowThemeHelper(g_hStart, NULL, NULL);
+        EnumChildWindows(
+            g_hStart,
+            [](HWND hChild, LPARAM) -> BOOL {
+                ShowWindow(hChild, SW_SHOW);
+                return TRUE;
+            },
+            0);
     }
+
+    // Fully redraw the window to apply changes
+    RedrawWindow(g_hStart, NULL, NULL,
+                 RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
 }
 
 LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd,
@@ -540,6 +786,7 @@ LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd,
 
             if (hide) {
                 PAINTSTRUCT ps;
+                BeginPaint(hWnd, &ps);
                 EndPaint(hWnd, &ps);
                 return 0;
             }
@@ -562,7 +809,7 @@ LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd,
 }
 
 void PositionOrb() {
-    if (!g_hOrbWnd)
+    if (g_isUnloading || !g_hOrbWnd)
         return;
 
     HWND hTask = GetParent(g_hOrbWnd);
@@ -983,6 +1230,7 @@ void Wh_ModAfterInit() {
 // -------------------- BEFORE UNINIT --------------------
 
 void Wh_ModBeforeUninit() {
+    g_isUnloading = true;
     if (g_isWindows11) {
         g_unloading_win11 = true;
         HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
@@ -1005,12 +1253,24 @@ void Wh_ModUninit() {
 
     if (g_hStart && IsWindow(g_hStart)) {
         RemoveWindowSubclass(g_hStart, StartButtonSubclassProc, 1);
+
         LONG_PTR exStyle = GetWindowLongPtr(g_hStart, GWL_EXSTYLE);
         if (exStyle & WS_EX_LAYERED) {
             SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
         }
-        InvalidateRect(g_hStart, NULL, TRUE);
-        UpdateWindow(g_hStart);
+
+        SetWindowThemeHelper(g_hStart, NULL, NULL);
+
+        EnumChildWindows(
+            g_hStart,
+            [](HWND hChild, LPARAM) -> BOOL {
+                ShowWindow(hChild, SW_SHOW);
+                return TRUE;
+            },
+            0);
+
+        RedrawWindow(g_hStart, NULL, NULL,
+                     RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
     }
 
     if (g_hOrbWnd) {
