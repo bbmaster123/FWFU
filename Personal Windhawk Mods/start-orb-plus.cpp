@@ -45,11 +45,11 @@ Replaces start button with custom start button on Windows 10 and 11 using a GDI 
 */
 // ==/WindhawkModSettings==
 
-#include <windows.h>
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
 #include <windhawk_utils.h>
+#include <windows.h>
 #include <atomic>
 
 #undef GetCurrentTime
@@ -79,9 +79,9 @@ HANDLE g_hOrbThread = NULL;
 
 ULONG_PTR g_gdiToken = 0;
 
-Image *g_imgNormal = nullptr;
-Image *g_imgHover = nullptr;
-Image *g_imgPressed = nullptr;
+Image* g_imgNormal = nullptr;
+Image* g_imgHover = nullptr;
+Image* g_imgPressed = nullptr;
 
 float g_fadeAlpha = 0.0f;
 int g_state = 0;
@@ -103,7 +103,8 @@ using CTaskBand_GetTaskbarHost_t = void*(WINAPI*)(void* pThis, void** result);
 CTaskBand_GetTaskbarHost_t CTaskBand_GetTaskbarHost_Original;
 void* TaskbarHost_FrameHeight_Original;
 
-using CSecondaryTaskBand_GetTaskbarHost_t = void*(WINAPI*)(void* pThis, void** result);
+using CSecondaryTaskBand_GetTaskbarHost_t = void*(WINAPI*)(void* pThis,
+                                                           void** result);
 CSecondaryTaskBand_GetTaskbarHost_t CSecondaryTaskBand_GetTaskbarHost_Original;
 
 using std__Ref_count_base__Decref_t = void(WINAPI*)(void* pThis);
@@ -128,9 +129,11 @@ FrameworkElement FindChildByName(FrameworkElement element, PCWSTR name) {
 }
 
 void CollapseStartButtonIcon(FrameworkElement element, bool hide) {
-    if (!element) return;
+    if (!element)
+        return;
 
-    if (winrt::get_class_name(element) == L"Microsoft.UI.Xaml.Controls.AnimatedVisualPlayer") {
+    if (winrt::get_class_name(element) ==
+        L"Microsoft.UI.Xaml.Controls.AnimatedVisualPlayer") {
         element.Visibility(hide ? Visibility::Collapsed : Visibility::Visible);
         return;
     }
@@ -146,19 +149,19 @@ void CollapseStartButtonIcon(FrameworkElement element, bool hide) {
 }
 
 bool ApplyStyle(XamlRoot xamlRoot) {
-    FrameworkElement child =
-        xamlRoot.Content().try_as<FrameworkElement>();
+    FrameworkElement child = xamlRoot.Content().try_as<FrameworkElement>();
     if (!child ||
-        !(child = EnumChildElements(child, [](FrameworkElement c) {
-            return winrt::get_class_name(c) == L"Taskbar.TaskbarFrame";
-        })) ||
+        !(child = EnumChildElements(child,
+                                    [](FrameworkElement c) {
+                                        return winrt::get_class_name(c) ==
+                                               L"Taskbar.TaskbarFrame";
+                                    })) ||
         !(child = FindChildByName(child, L"RootGrid")) ||
         !(child = FindChildByName(child, L"TaskbarFrameRepeater")))
         return false;
 
     auto startButton = EnumChildElements(child, [](FrameworkElement c) {
-        return winrt::get_class_name(c) ==
-                   L"Taskbar.ExperienceToggleButton" &&
+        return winrt::get_class_name(c) == L"Taskbar.ExperienceToggleButton" &&
                Automation::AutomationProperties::GetAutomationId(c) ==
                    L"StartButton";
     });
@@ -184,17 +187,16 @@ XamlRoot XamlRootFromTaskbarHostSharedPtr(void* taskbarHostSharedPtr[2]) {
         offset = b[7];
     auto* unk = *(IUnknown**)((BYTE*)taskbarHostSharedPtr[0] + offset);
     FrameworkElement fe = nullptr;
-    unk->QueryInterface(winrt::guid_of<FrameworkElement>(),
-                        winrt::put_abi(fe));
+    unk->QueryInterface(winrt::guid_of<FrameworkElement>(), winrt::put_abi(fe));
     auto result = fe ? fe.XamlRoot() : nullptr;
     std__Ref_count_base__Decref_Original(taskbarHostSharedPtr[1]);
     return result;
 }
 
 XamlRoot GetTaskbarXamlRoot(HWND hWnd, bool isSecondary) {
-    HWND hTaskSwWnd = isSecondary
-        ? (HWND)FindWindowEx(hWnd, nullptr, L"WorkerW", nullptr)
-        : (HWND)GetProp(hWnd, L"TaskbandHWND");
+    HWND hTaskSwWnd =
+        isSecondary ? (HWND)FindWindowEx(hWnd, nullptr, L"WorkerW", nullptr)
+                    : (HWND)GetProp(hWnd, L"TaskbandHWND");
     if (!hTaskSwWnd)
         return nullptr;
     void* vftable = isSecondary ? CSecondaryTaskBand_ITaskListWndSite_vftable
@@ -244,8 +246,8 @@ void ApplySettingsFromTaskbarThread() {
 }
 
 void ApplySettings(HWND hTaskbarWnd) {
-    static const UINT msg =
-        RegisterWindowMessage(L"Windhawk_RunFromWindowThread_start-orb-restorer");
+    static const UINT msg = RegisterWindowMessage(
+        L"Windhawk_RunFromWindowThread_start-orb-restorer");
     DWORD threadId = GetWindowThreadProcessId(hTaskbarWnd, nullptr);
     if (!threadId)
         return;
@@ -284,7 +286,8 @@ HRESULT WINAPI IUIElement_Arrange_Hook(void* pThis,
     if (!element)
         return original();
     if (winrt::get_class_name(element) == L"Taskbar.ExperienceToggleButton" &&
-        Automation::AutomationProperties::GetAutomationId(element) == L"StartButton") {
+        Automation::AutomationProperties::GetAutomationId(element) ==
+            L"StartButton") {
         bool hide;
         EnterCriticalSection(&g_cs);
         hide = g_settings.hideDefault;
@@ -380,7 +383,8 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName,
 // -------------------- IMAGE --------------------
 
 Image* LoadOne(PCWSTR path) {
-    if (!path || !path[0]) return nullptr;
+    if (!path || !path[0])
+        return nullptr;
     Image* img = Image::FromFile(path);
     if (!img || img->GetLastStatus() != Ok) {
         delete img;
@@ -406,8 +410,8 @@ void LoadImages() {
     PCWSTR pathHover = Wh_GetStringSetting(L"orbHover");
     PCWSTR pathPressed = Wh_GetStringSetting(L"orbPressed");
 
-    g_imgNormal  = LoadOne(pathNormal);
-    g_imgHover   = LoadOne(pathHover);
+    g_imgNormal = LoadOne(pathNormal);
+    g_imgHover = LoadOne(pathHover);
     g_imgPressed = LoadOne(pathPressed);
 
     Wh_FreeStringSetting(pathNormal);
@@ -420,15 +424,15 @@ void LoadImages() {
 
 HWND FindStartButton() {
     HWND hTask = FindWindow(L"Shell_TrayWnd", NULL);
-    if (!hTask) return NULL;
+    if (!hTask)
+        return NULL;
 
     HWND child = NULL;
     while ((child = FindWindowEx(hTask, child, NULL, NULL))) {
         wchar_t cls[64];
         GetClassName(child, cls, 64);
 
-        if (wcscmp(cls, L"Start") == 0 ||
-            wcscmp(cls, L"Button") == 0) {
+        if (wcscmp(cls, L"Start") == 0 || wcscmp(cls, L"Button") == 0) {
             return child;
         }
     }
@@ -454,7 +458,8 @@ bool IsStartMenuVisible() {
     if (hOpenStart && IsWindowVisible(hOpenStart)) {
         return true;
     }
-    HWND hWin11Start = FindWindow(L"Windows.UI.Core.CoreWindow", L"StartMenuExperienceHost");
+    HWND hWin11Start =
+        FindWindow(L"Windows.UI.Core.CoreWindow", L"StartMenuExperienceHost");
     if (hWin11Start && IsWindowVisible(hWin11Start)) {
         return true;
     }
@@ -466,10 +471,12 @@ void UpdateStartButtonVisibility() {
         HWND hTaskbarWnd = FindCurrentProcessTaskbarWnd();
         if (hTaskbarWnd)
             ApplySettings(hTaskbarWnd);
-        return; // Return early on native Windows 11 to avoid breaking clickability
+        return;  // Return early on native Windows 11 to avoid breaking
+                 // clickability
     }
 
-    if (!g_hStart || !IsWindow(g_hStart)) return;
+    if (!g_hStart || !IsWindow(g_hStart))
+        return;
 
     bool hide;
     EnterCriticalSection(&g_cs);
@@ -481,18 +488,26 @@ void UpdateStartButtonVisibility() {
         if (!(exStyle & WS_EX_LAYERED)) {
             SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
         }
-        // Alpha 1 makes it completely transparent but keeps it 100% clickable/hoverable!
+        // Alpha 1 makes it completely transparent but keeps it 100%
+        // clickable/hoverable!
         SetLayeredWindowAttributes(g_hStart, 0, 1, LWA_ALPHA);
     } else {
         if (exStyle & WS_EX_LAYERED) {
             SetWindowLongPtr(g_hStart, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
             // Fully redraw the window to bring back its original theme/icon
-            RedrawWindow(g_hStart, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+            RedrawWindow(
+                g_hStart, NULL, NULL,
+                RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
         }
     }
 }
 
-LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd,
+                                         UINT uMsg,
+                                         WPARAM wParam,
+                                         LPARAM lParam,
+                                         UINT_PTR uIdSubclass,
+                                         DWORD_PTR dwRefData) {
     static bool s_eatNextLButtonUp = false;
 
     switch (uMsg) {
@@ -524,7 +539,7 @@ LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LP
             LeaveCriticalSection(&g_cs);
 
             if (hide) {
-                PAINTSTRUCT ps;             
+                PAINTSTRUCT ps;
                 EndPaint(hWnd, &ps);
                 return 0;
             }
@@ -537,7 +552,8 @@ LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LP
             LeaveCriticalSection(&g_cs);
 
             if (hide) {
-                return TRUE; // indicate background erased/painted (drawn nothing)
+                return TRUE;  // indicate background erased/painted (drawn
+                              // nothing)
             }
             break;
         }
@@ -546,13 +562,15 @@ LRESULT CALLBACK StartButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LP
 }
 
 void PositionOrb() {
-    if (!g_hOrbWnd) return;
+    if (!g_hOrbWnd)
+        return;
 
     HWND hTask = GetParent(g_hOrbWnd);
     if (!hTask) {
         hTask = FindWindow(L"Shell_TrayWnd", NULL);
     }
-    if (!hTask) return;
+    if (!hTask)
+        return;
 
     if (!g_hStart || !IsWindow(g_hStart)) {
         g_hStart = FindStartButton();
@@ -562,9 +580,11 @@ void PositionOrb() {
         }
     }
 
-    if (!g_hStart) return;
+    if (!g_hStart)
+        return;
 
-    // Always keep the original start button shown so it remains clickable and hit-testable
+    // Always keep the original start button shown so it remains clickable and
+    // hit-testable
     ShowWindow(g_hStart, SW_SHOW);
 
     // If minimized, restore it
@@ -589,22 +609,23 @@ void PositionOrb() {
     LeaveCriticalSection(&g_cs);
 
     // Convert start button screen coordinates to taskbar client coordinates
-    POINT pt = { rc.left, rc.top };
+    POINT pt = {rc.left, rc.top};
     ScreenToClient(hTask, &pt);
 
     int x = pt.x + ((rc.right - rc.left) - sizeX) / 2 + offsetX;
     int y = pt.y + ((rc.bottom - rc.top) - sizeY) / 2 + offsetY;
 
-    // Use HWND_TOP to keep the child window at the top of the taskbar child z-order
-    SetWindowPos(g_hOrbWnd, HWND_TOP,
-        x, y, sizeX, sizeY,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // Use HWND_TOP to keep the child window at the top of the taskbar child
+    // z-order
+    SetWindowPos(g_hOrbWnd, HWND_TOP, x, y, sizeX, sizeY,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 // -------------------- DRAW --------------------
 
 void UpdateOrbDisplay(HWND hwnd) {
-    if (g_isUnloading || !hwnd) return;
+    if (g_isUnloading || !hwnd)
+        return;
 
     EnterCriticalSection(&g_cs);
 
@@ -619,16 +640,17 @@ void UpdateOrbDisplay(HWND hwnd) {
     bmi.bmiHeader.biBitCount = 32;
 
     void* pBits = NULL;
-    HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
+    HBITMAP hBitmap =
+        CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
 
     if (hBitmap) {
         HBITMAP old = (HBITMAP)SelectObject(hdcMem, hBitmap);
 
         Graphics g(hdcMem);
         g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-        g.Clear(Color(0,0,0,0));
+        g.Clear(Color(0, 0, 0, 0));
 
-        RectF rect(0,0,(REAL)g_settings.sizeX,(REAL)g_settings.sizeY);
+        RectF rect(0, 0, (REAL)g_settings.sizeX, (REAL)g_settings.sizeY);
 
         Image* img = g_imgNormal;
 
@@ -639,31 +661,26 @@ void UpdateOrbDisplay(HWND hwnd) {
 
         if (g_imgHover && g_fadeAlpha > 0.001f && g_state != 2) {
             ImageAttributes attr;
-            ColorMatrix matrix = {
-                1,0,0,0,0,
-                0,1,0,0,0,
-                0,0,1,0,0,
-                0,0,0,g_fadeAlpha,0,
-                0,0,0,0,1
-            };
+            ColorMatrix matrix = {1,           0, 0, 0, 0, 0, 1, 0, 0,
+                                  0,           0, 0, 1, 0, 0, 0, 0, 0,
+                                  g_fadeAlpha, 0, 0, 0, 0, 0, 1};
             attr.SetColorMatrix(&matrix);
 
-            g.DrawImage(g_imgHover, rect, 0,0,
-                (REAL)g_imgHover->GetWidth(),
-                (REAL)g_imgHover->GetHeight(),
-                UnitPixel, &attr);
+            g.DrawImage(g_imgHover, rect, 0, 0, (REAL)g_imgHover->GetWidth(),
+                        (REAL)g_imgHover->GetHeight(), UnitPixel, &attr);
         }
 
         int alpha = (int)(g_settings.minOpacity +
-            (g_settings.maxOpacity - g_settings.minOpacity) * g_fadeAlpha);
+                          (g_settings.maxOpacity - g_settings.minOpacity) *
+                              g_fadeAlpha);
 
         BLENDFUNCTION blend = {AC_SRC_OVER, 0, (BYTE)alpha, AC_SRC_ALPHA};
 
-        POINT pt = {0,0};
+        POINT pt = {0, 0};
         SIZE sz = {g_settings.sizeX, g_settings.sizeY};
 
-        UpdateLayeredWindow(hwnd, hdcScreen, NULL, &sz,
-            hdcMem, &pt, 0, &blend, ULW_ALPHA);
+        UpdateLayeredWindow(hwnd, hdcScreen, NULL, &sz, hdcMem, &pt, 0, &blend,
+                            ULW_ALPHA);
 
         SelectObject(hdcMem, old);
         DeleteObject(hBitmap);
@@ -697,22 +714,25 @@ DWORD WINAPI OrbThreadProc(LPVOID lpParam) {
     HWND hTask = NULL;
     for (int i = 0; i < 100; i++) {
         hTask = FindWindow(L"Shell_TrayWnd", NULL);
-        if (hTask) break;
+        if (hTask)
+            break;
         Sleep(50);
     }
 
-    g_hOrbWnd = CreateWindowEx(
-        WS_EX_LAYERED | WS_EX_TRANSPARENT,
-        wc.lpszClassName, NULL,
-        WS_CHILD | WS_VISIBLE,
-        0,0,sizeX,sizeY,
-        hTask, NULL, wc.hInstance, NULL);
+    g_hOrbWnd =
+        CreateWindowEx(WS_EX_LAYERED | WS_EX_TRANSPARENT, wc.lpszClassName,
+                       NULL, WS_CHILD | WS_VISIBLE, 0, 0, sizeX, sizeY, hTask,
+                       NULL, wc.hInstance, NULL);
 
     if (g_hOrbWnd) {
-        Wh_Log(L"Orb window successfully created as WS_CHILD: %p (parent hTask: %p)", g_hOrbWnd, hTask);
-        
+        Wh_Log(
+            L"Orb window successfully created as WS_CHILD: %p (parent hTask: "
+            L"%p)",
+            g_hOrbWnd, hTask);
+
         BOOL exclude = TRUE;
-        DwmSetWindowAttribute(g_hOrbWnd, DWMWA_EXCLUDED_FROM_PEEK, &exclude, sizeof(exclude));
+        DwmSetWindowAttribute(g_hOrbWnd, DWMWA_EXCLUDED_FROM_PEEK, &exclude,
+                              sizeof(exclude));
 
         SetTimer(g_hOrbWnd, 1, 16, NULL);  // animation
         SetTimer(g_hOrbWnd, 2, 50, NULL);  // position
@@ -736,161 +756,165 @@ DWORD WINAPI OrbThreadProc(LPVOID lpParam) {
 
 LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+        case WM_TIMER:
 
-    case WM_TIMER:
+            if (wp == 1) {
+                float target = (g_state >= 1) ? 1.0f : 0.0f;
 
-        if (wp == 1) {
-            float target = (g_state >= 1) ? 1.0f : 0.0f;
-            
-            float speed;
-            EnterCriticalSection(&g_cs);
-            speed = (float)g_settings.speed;
-            LeaveCriticalSection(&g_cs);
-            
-            float step = speed / 1000.0f;
+                float speed;
+                EnterCriticalSection(&g_cs);
+                speed = (float)g_settings.speed;
+                LeaveCriticalSection(&g_cs);
 
-            if (g_fadeAlpha < target) {
-                g_fadeAlpha += step;
-                if (g_fadeAlpha > target) g_fadeAlpha = target;
-            } else if (g_fadeAlpha > target) {
-                g_fadeAlpha -= step;
-                if (g_fadeAlpha < target) g_fadeAlpha = target;
-            }
+                float step = speed / 1000.0f;
 
-            UpdateOrbDisplay(hwnd);
-        }
-
-        else if (wp == 2) {
-            PositionOrb();
-        }
-
-        else if (wp == 3) {
-            POINT pt;
-            GetCursorPos(&pt);
-
-            bool hover = false;
-
-            // 1. Check if cursor is over our orb window
-            if (g_hOrbWnd) {
-                RECT rcOrb;
-                GetWindowRect(g_hOrbWnd, &rcOrb);
-                if (PtInRect(&rcOrb, pt)) {
-                    hover = true;
+                if (g_fadeAlpha < target) {
+                    g_fadeAlpha += step;
+                    if (g_fadeAlpha > target)
+                        g_fadeAlpha = target;
+                } else if (g_fadeAlpha > target) {
+                    g_fadeAlpha -= step;
+                    if (g_fadeAlpha < target)
+                        g_fadeAlpha = target;
                 }
+
+                UpdateOrbDisplay(hwnd);
             }
 
-            // 2. Check if cursor is over the original start button (fallback)
-            if (!hover) {
-                if (!g_hStart || !IsWindow(g_hStart))
-                    g_hStart = FindStartButton();
+            else if (wp == 2) {
+                PositionOrb();
+            }
 
-                if (g_hStart) {
-                    RECT rcStart;
-                    GetWindowRect(g_hStart, &rcStart);
-                    if (PtInRect(&rcStart, pt)) {
+            else if (wp == 3) {
+                POINT pt;
+                GetCursorPos(&pt);
+
+                bool hover = false;
+
+                // 1. Check if cursor is over our orb window
+                if (g_hOrbWnd) {
+                    RECT rcOrb;
+                    GetWindowRect(g_hOrbWnd, &rcOrb);
+                    if (PtInRect(&rcOrb, pt)) {
                         hover = true;
                     }
                 }
+
+                // 2. Check if cursor is over the original start button
+                // (fallback)
+                if (!hover) {
+                    if (!g_hStart || !IsWindow(g_hStart))
+                        g_hStart = FindStartButton();
+
+                    if (g_hStart) {
+                        RECT rcStart;
+                        GetWindowRect(g_hStart, &rcStart);
+                        if (PtInRect(&rcStart, pt)) {
+                            hover = true;
+                        }
+                    }
+                }
+
+                bool pressed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && hover;
+                g_state = pressed ? 2 : (hover ? 1 : 0);
             }
 
-            bool pressed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && hover;
-            g_state = pressed ? 2 : (hover ? 1 : 0);
-        }
+            return 0;
 
-        return 0;
-
-    case WM_WINDOWPOSCHANGING: {
-        if (!g_isUnloading) {
-            WINDOWPOS* lpwpos = (WINDOWPOS*)lp;
-            if (lpwpos->flags & SWP_HIDEWINDOW) {
-                lpwpos->flags &= ~SWP_HIDEWINDOW;
+        case WM_WINDOWPOSCHANGING: {
+            if (!g_isUnloading) {
+                WINDOWPOS* lpwpos = (WINDOWPOS*)lp;
+                if (lpwpos->flags & SWP_HIDEWINDOW) {
+                    lpwpos->flags &= ~SWP_HIDEWINDOW;
+                }
+                lpwpos->flags |= SWP_SHOWWINDOW;
             }
-            lpwpos->flags |= SWP_SHOWWINDOW;
+            break;
         }
-        break;
-    }
 
-    case WM_WINDOWPOSCHANGED: {
-        if (!g_isUnloading) {
-            WINDOWPOS* lpwpos = (WINDOWPOS*)lp;
-            if ((lpwpos->flags & SWP_HIDEWINDOW) || IsIconic(hwnd)) {
+        case WM_WINDOWPOSCHANGED: {
+            if (!g_isUnloading) {
+                WINDOWPOS* lpwpos = (WINDOWPOS*)lp;
+                if ((lpwpos->flags & SWP_HIDEWINDOW) || IsIconic(hwnd)) {
+                    PostMessage(hwnd, WM_USER + 2, 0, 0);
+                }
+            }
+            break;
+        }
+
+        case WM_SHOWWINDOW: {
+            if (!g_isUnloading && wp == FALSE) {
                 PostMessage(hwnd, WM_USER + 2, 0, 0);
             }
+            break;
         }
-        break;
-    }
 
-    case WM_SHOWWINDOW: {
-        if (!g_isUnloading && wp == FALSE) {
-            PostMessage(hwnd, WM_USER + 2, 0, 0);
-        }
-        break;
-    }
-
-    case WM_SYSCOMMAND: {
-        if (!g_isUnloading && (wp & 0xFFF0) == SC_MINIMIZE) {
-            PostMessage(hwnd, WM_USER + 2, 0, 0);
-            return 0;
-        }
-        break;
-    }
-
-    case WM_SIZE: {
-        if (!g_isUnloading && wp == SIZE_MINIMIZED) {
-            PostMessage(hwnd, WM_USER + 2, 0, 0);
-            return 0;
-        }
-        break;
-    }
-
-    case 0x031B: { // WM_DWMCLOAKEDCHANGED
-        if (!g_isUnloading) {
-            BOOL cloaked = FALSE;
-            #ifndef DWMWA_CLOAKED
-            #define DWMWA_CLOAKED 14
-            #endif
-            if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) {
+        case WM_SYSCOMMAND: {
+            if (!g_isUnloading && (wp & 0xFFF0) == SC_MINIMIZE) {
                 PostMessage(hwnd, WM_USER + 2, 0, 0);
+                return 0;
             }
+            break;
         }
-        break;
-    }
 
-    case WM_USER + 1: // WM_SETTINGS_CHANGED
-        PositionOrb();
-        if (g_hStart && IsWindow(g_hStart)) {
-            InvalidateRect(g_hStart, NULL, TRUE);
-            UpdateWindow(g_hStart);
-        }
-        UpdateOrbDisplay(hwnd);
-        return 0;
-
-    case WM_USER + 2: // Force show / restore
-        if (!g_isUnloading) {
-            if (IsIconic(hwnd)) {
-                ShowWindow(hwnd, SW_RESTORE);
+        case WM_SIZE: {
+            if (!g_isUnloading && wp == SIZE_MINIMIZED) {
+                PostMessage(hwnd, WM_USER + 2, 0, 0);
+                return 0;
             }
-            ShowWindow(hwnd, SW_SHOW);
+            break;
+        }
+
+        case 0x031B: {  // WM_DWMCLOAKEDCHANGED
+            if (!g_isUnloading) {
+                BOOL cloaked = FALSE;
+#ifndef DWMWA_CLOAKED
+#define DWMWA_CLOAKED 14
+#endif
+                if (SUCCEEDED(DwmGetWindowAttribute(
+                        hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) &&
+                    cloaked) {
+                    PostMessage(hwnd, WM_USER + 2, 0, 0);
+                }
+            }
+            break;
+        }
+
+        case WM_USER + 1:  // WM_SETTINGS_CHANGED
             PositionOrb();
+            if (g_hStart && IsWindow(g_hStart)) {
+                InvalidateRect(g_hStart, NULL, TRUE);
+                UpdateWindow(g_hStart);
+            }
             UpdateOrbDisplay(hwnd);
-        }
-        return 0;
+            return 0;
 
-    case WM_SETCURSOR:
-        SetCursor(LoadCursor(NULL, IDC_HAND));
-        return TRUE;
+        case WM_USER + 2:  // Force show / restore
+            if (!g_isUnloading) {
+                if (IsIconic(hwnd)) {
+                    ShowWindow(hwnd, SW_RESTORE);
+                }
+                ShowWindow(hwnd, SW_SHOW);
+                PositionOrb();
+                UpdateOrbDisplay(hwnd);
+            }
+            return 0;
 
-    case WM_CLOSE:
-        KillTimer(hwnd, 1);
-        KillTimer(hwnd, 2);
-        KillTimer(hwnd, 3);
-        DestroyWindow(hwnd);
-        return 0;
+        case WM_SETCURSOR:
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return TRUE;
 
-    case WM_DESTROY:
-        g_hOrbWnd = NULL;
-        PostQuitMessage(0);
-        return 0;
+        case WM_CLOSE:
+            KillTimer(hwnd, 1);
+            KillTimer(hwnd, 2);
+            KillTimer(hwnd, 3);
+            DestroyWindow(hwnd);
+            return 0;
+
+        case WM_DESTROY:
+            g_hOrbWnd = NULL;
+            PostQuitMessage(0);
+            return 0;
     }
 
     return DefWindowProc(hwnd, msg, wp, lp);
@@ -924,8 +948,10 @@ BOOL Wh_ModInit() {
             }
         } else {
             HMODULE kb = GetModuleHandle(L"kernelbase.dll");
-            auto pLoadLib = (decltype(&LoadLibraryExW))GetProcAddress(kb, "LoadLibraryExW");
-            WindhawkUtils::SetFunctionHook(pLoadLib, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
+            auto pLoadLib =
+                (decltype(&LoadLibraryExW))GetProcAddress(kb, "LoadLibraryExW");
+            WindhawkUtils::SetFunctionHook(pLoadLib, LoadLibraryExW_Hook,
+                                           &LoadLibraryExW_Original);
         }
     }
 
