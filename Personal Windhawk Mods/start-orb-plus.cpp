@@ -618,9 +618,24 @@ void LoadImages() {
 
     DownloadJob* job = new DownloadJob();
     job->jobId = currentJobId;
-    job->urlNormal = pathNormal ? pathNormal : L"";
-    job->urlHover = pathHover ? pathHover : L"";
-    job->urlPressed = pathPressed ? pathPressed : L"";
+
+    job->urlNormal = (pathNormal && pathNormal[0])
+                         ? pathNormal
+                         : L"https://raw.githubusercontent.com/ramensoftware/"
+                           L"windows-11-taskbar-styling-guide/refs/heads/main/"
+                           L"Themes/Windows7/ThemeResources/orbNormal.png";
+
+    job->urlHover = (pathHover && pathHover[0])
+                        ? pathHover
+                        : L"https://raw.githubusercontent.com/ramensoftware/"
+                          L"windows-11-taskbar-styling-guide/refs/heads/main/"
+                          L"Themes/Windows7/ThemeResources/orbHover.png";
+
+    job->urlPressed = (pathPressed && pathPressed[0])
+                          ? pathPressed
+                          : L"https://raw.githubusercontent.com/ramensoftware/"
+                            L"windows-11-taskbar-styling-guide/refs/heads/main/"
+                            L"Themes/Windows7/ThemeResources/orbPressed.png";
 
     Wh_FreeStringSetting(pathNormal);
     Wh_FreeStringSetting(pathHover);
