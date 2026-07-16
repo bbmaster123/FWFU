@@ -3,7 +3,7 @@
 // @name           Start Orb Plus
 // @description    Windows 7 style Start Orb overlay
 // @version        1.0.0
-// @author         Bbmaster123/AI
+// @author         Bbmaster123/Gemini
 // @include        explorer.exe
 // @architecture   x86-64
 // @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi -lcomctl32 -lole32 -loleaut32 -lruntimeobject
@@ -11,6 +11,7 @@
 // ==WindhawkModReadme==
 /*
 ![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/start-orb.gif)
+![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/start-orb2.gif)
 
 Replaces start button with a custom start button on Windows 10 and 11 using a GDI overlay. Users supply 3 Images:
 1. Idle
@@ -59,7 +60,6 @@ Replaces start button with a custom start button on Windows 10 and 11 using a GD
 #include <windhawk_utils.h>
 #include <windows.h>
 #include <atomic>
-
 
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
