@@ -23,6 +23,7 @@
 - Hotkey activation option
 - Inject to Tray or existing Windows Weather Panel button (Windows 11)
 - Panel opens to current time and day rounded down to the nearest hour
+- Tested on Builds ranging from 19045 to 26300
 
 # Windows 10
 ![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/win10weather.png)
