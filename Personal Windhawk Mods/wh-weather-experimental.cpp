@@ -1,12 +1,39 @@
 // ==WindhawkMod==
 // @id              wh-weather
 // @name            Windhawk Weather
-// @description     A lightweight taskbar weather widget and flyout that injects directly into the Windows Taskbar UI Tree.
-// @version         1.1.0
-// @author          bbmaster123
+// @description     A weather widget and flyout that injects directly into the Windows Taskbar. Inspired by ExplorerPatcher's weather widget :)
+// @version         1.0.0
+// @author          bbmaster123/Gemini
 // @include         explorer.exe
 // @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion -lcomctl32 -ld2d1 -ldwrite
 // ==/WindhawkMod==
+// ==WindhawkModReadme==
+/*
+- Auto or custom location provided by Open-Meteo
+- Toggle alert banner on or off. Click to see multiple alerts.
+- Celsius/Fareinheit
+- Emoji/Glyph icon sets
+- Temperature, Precipitation, humidity, Wind speed/direction 
+- Scrollable graph with clickable hours
+- Adjustable taskbar position offset
+- Font adjustments
+- Acrylic toggle and Opacity
+- Background Image/Video
+- Up to 16 days forcast (scroll for more)
+- Hotkey activation option
+- Inject to Tray or existing Windows Weather Panel button (Windows 11)
+- Panel opens to current time and day rounded down to the nearest hour
+
+# Windows 10
+![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/win10weather.png)
+
+# Windows 11
+![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/weather.png)
+
+# Taskbar Button
+![Screenshot](https://raw.githubusercontent.com/bbmaster123/FWFU/refs/heads/main/Assets/weatherbutton.png)
+*/
+// ==/WindhawkModReadme==
 
 // ==WindhawkModSettings==
 /*
