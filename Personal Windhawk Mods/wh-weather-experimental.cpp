@@ -5,7 +5,7 @@
 // @version         1.0.0
 // @author          bbmaster123/Gemini
 // @include         explorer.exe
-// @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -lole32 -luuid -lshell32 -loleaut32 -ldwmapi -lruntimeobject -lshcore -lversion -lcomctl32 -ld2d1 -ldwrite
+// @compilerOptions -DWINVER=0x0A00 -lgdi32 -luser32 -luxtheme -lwinhttp -lshlwapi -luuid -lshell32 -ldwmapi -lshcore -lversion -lcomctl32 -ld2d1 -ldwrite -lole32 -loleaut32 -lruntimeobject -luser32 -lwindowsapp -lgdi32 -lshlwapi -lwindowscodecs -lksuser
 // ==/WindhawkMod==
 // ==WindhawkModReadme==
 /*
@@ -5527,11 +5527,6 @@ BOOL Wh_ModInit() {
 
     LoadModConfiguration();
 
-    // Create dedicated popup STA thread
-    g_hPopupThread = CreateThread(NULL, 0, PopupThreadProc, NULL, 0, &g_dwPopupThreadId);
-
-    AlignOverlayWindow();
-
     g_bThreadShouldTerm = false;
 
     // Background weather crawl
@@ -5539,7 +5534,8 @@ BOOL Wh_ModInit() {
         CreateThread(NULL, 0, QueryWeatherPipeline, NULL, 0, &g_dwThreadId);
 
     // Watchdog thread for rapid, automated taskbar subclass injection/maintenance
-    g_hWatchdogThread = CreateThread(NULL, 0, SubclassWatchdogThread, NULL, 0, NULL);
+    g_hWatchdogThread =
+        g_hWatchdogThread = CreateThread(NULL, 0, SubclassWatchdogThread, NULL, 0, NULL);
 
     // Initial check if taskbar module is loaded or intercept via library load
     // hooks
@@ -5552,24 +5548,28 @@ BOOL Wh_ModInit() {
     } else {
         WindhawkUtils::SetFunctionHook(LoadLibraryExW, LoadLibraryExW_Hook,
                                        &LoadLibraryExW_Original);
-        HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
-        if (hNt) {
-            void* pLdrLoadDll = (void*)GetProcAddress(hNt, "LdrLoadDll");
-            if (pLdrLoadDll) {
-                WindhawkUtils::SetFunctionHook(pLdrLoadDll, (void*)LdrLoadDll_Hook,
-                                               (void**)&LdrLoadDll_Original);
-            }
-        }
     }
+    if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd)) {
+        SetWindowPos(g_hSubclassedWnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+    AlignOverlayWindow();
 
+    // Force a visual state update on the taskbar to immediately trigger our
+    // subclass hook
     HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
     if (hTaskbar) {
+        SendMessageTimeoutW(hTaskbar, WM_SETTINGCHANGE, 0,
+                            (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, NULL);
+        SendMessageTimeoutW(hTaskbar, WM_THEMECHANGED, 0, 0,
+                            SMTO_ABORTIFHUNG, 1000, NULL);
         PostMessageW(hTaskbar, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet");
         PostMessageW(hTaskbar, WM_THEMECHANGED, 0, 0);
     }
 
     // Force tasks to refresh immediately so scan triggers without clicking
     ForceTaskbarUpdateOriginal();
+
 
     if (g_debugLogs)
         Wh_Log(
@@ -5578,92 +5578,56 @@ BOOL Wh_ModInit() {
     return TRUE;
 }
 
-// Windhawk mod Exit Point
-BOOL CALLBACK CleanupXamlWindowsCallback(HWND hWnd, LPARAM lParam) {
-    WCHAR className[256];
-    if (GetClassNameW(hWnd, className, 256) && wcscmp(className, L"WhWin10ForecastPopupClass") == 0) {
-        SendMessageW(hWnd, WM_USER + 4246, 0, 0);
-    }
-    return TRUE;
-}
-
 void Wh_ModUninit() {
     if (!g_isShellProcess) {
         return;
     }
 
-    try {
-        g_showWin11Flyout = nullptr;
-    } catch (...) {}
-    try {
-        g_weakXamlWeatherButton = nullptr;
-    } catch (...) {}
-
-    if (g_activeFlyout) {
-        try {
-            g_activeFlyout.Hide();
-        } catch (...) {}
-        try {
-            g_activeFlyout = nullptr;
-        } catch (...) {}
-    }
-
     if (g_debugLogs)
         Wh_Log(L"[EP_WeatherHost] Unloading mod...");
 
-    g_bThreadShouldTerm = true;
-    if (g_hForceUpdateEvent) SetEvent(g_hForceUpdateEvent);
-
-    // 1. Safely remove subclassing and restore layout
     EnterCriticalSection(&g_subclassLock);
     if (g_hSubclassedWnd) {
         g_modUnloaded = true;
         HWND hwndToClean = g_hSubclassedWnd;
 
-        if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = NULL; }
-        KillTimer(hwndToClean, 1234);
-        RestoreDefaultWindowSize(hwndToClean);
         WindhawkUtils::RemoveWindowSubclassFromAnyThread(hwndToClean, ClockSubclassWndProc);
         g_hSubclassedWnd = NULL;
-        g_currentAddedWeatherWidth = 0;
+
+        RestoreDefaultWindowSize(hwndToClean);
+
+        HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+        if (hTaskbar) {
+            SendMessageTimeoutW(hTaskbar, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 1000, NULL);
+            SendMessageTimeoutW(hTaskbar, WM_THEMECHANGED, 0, 0, SMTO_ABORTIFHUNG, 1000, NULL);
+        }
+        ForceTaskbarUpdateOriginal();
     }
-    LeaveCriticalSection(&g_subclassLock);
-    Wh_Log(L"Finished Critical section unload");
-    // 2. Clean up XAML and its child windows directly across all threads
-    EnumWindows(CleanupXamlWindowsCallback, 0);
-Wh_Log(L"Finished Cleanup Xaml Windows");
-    // 3. Wait for background threads to terminate
+ 
+
+    g_bThreadShouldTerm = true;
+    if (g_hForceUpdateEvent) {
+        SetEvent(g_hForceUpdateEvent);
+    }
+    // Give background threads a moment to exit
+    Sleep(50);
+
     if (g_hQueryThread) {
-        WaitForSingleObject(g_hQueryThread, 5000);
+        WaitForSingleObject(g_hQueryThread, 3000);
         CloseHandle(g_hQueryThread);
         g_hQueryThread = NULL;
     }
 
     if (g_hWatchdogThread) {
-        WaitForSingleObject(g_hWatchdogThread, 2000);
+        WaitForSingleObject(g_hWatchdogThread, 3000);
         CloseHandle(g_hWatchdogThread);
         g_hWatchdogThread = NULL;
-    }
-
-    if (g_hPopupThread) {
-        WaitForSingleObject(g_hPopupThread, 3000);
-        CloseHandle(g_hPopupThread);
-        g_hPopupThread = NULL;
     }
 
     if (g_hForceUpdateEvent) {
         CloseHandle(g_hForceUpdateEvent);
         g_hForceUpdateEvent = NULL;
     }
-Wh_Log(L"closed handles");
-    // Give time for window destruction messages to process before unregistering the class
-    Sleep(50);
-    UnregisterClassW(L"WhWin10ForecastPopupClass", GetModuleHandleW(NULL));
-
-
-    try {
-        g_activeFlyout = nullptr;
-    } catch (...) {}
 
     Grid targetGrid = nullptr;
     {
@@ -5672,51 +5636,21 @@ Wh_Log(L"closed handles");
             targetGrid = g_injectedWeatherGrid.get();
     }
     if (targetGrid) {
-        try {
-            auto dispatcher = targetGrid.Dispatcher();
-            if (dispatcher.HasThreadAccess()) {
-                if (auto parent = targetGrid.Parent().try_as<Grid>()) {
-                    RemoveInjectedFromGrid(parent);
-                }
-            } else {
-                auto weakGrid = winrt::make_weak(targetGrid);
-                auto action = dispatcher.RunAsync(
-                    winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
-                    [weakGrid]() {
-                        try {
-                            if (auto grid = weakGrid.get()) {
-                                if (auto parent = grid.Parent().try_as<Grid>()) {
-                                    RemoveInjectedFromGrid(parent);
-                                }
-                            }
-                        } catch (...) {
-                        }
-                    });
+        targetGrid.Dispatcher().RunAsync(
+            winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+            [targetGrid]() {
                 try {
-                    // action.get(); // Wait synchronously for completion instead of timing out
+                    if (auto parent = targetGrid.Parent().try_as<Grid>()) {
+                        RemoveInjectedFromGrid(parent);
+                    }
                 } catch (...) {
                 }
-            }
-        } catch (...) {
-        }
+            });
     }
-Wh_Log(L"unloded forcast grid");
+   LeaveCriticalSection(&g_subclassLock);
     DeleteCriticalSection(&g_forecastLock);
     DeleteCriticalSection(&g_subclassLock);
-
-    if (g_pDWriteFactory) {
-        g_pDWriteFactory->Release();
-        g_pDWriteFactory = nullptr;
-    }
-    if (g_pD2DFactory) {
-        g_pD2DFactory->Release();
-        g_pD2DFactory = nullptr;
-    }
-
-    BufferedPaintUnInit();
-    Wh_Log(L"finished uninit");
 }
-
 
 // Settings update receiver
 void Wh_ModSettingsChanged() {
