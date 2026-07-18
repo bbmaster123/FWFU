@@ -168,7 +168,7 @@ int g_updateInterval = 15;
 int g_weatherStyle = 0;  // 0 = Emoji, 1 = Segoe MDL2
 bool g_showConditionName = true;
 bool g_useAcrylic = true;
-int g_acrylicOpacity = 85;
+int g_acrylicOpacity = 65;
 std::wstring g_bgImageVideoUrl = L"";
 int g_bgImageVideoOpacity = 30;
 int g_bgImageVideoStretch = 3;
@@ -179,7 +179,10 @@ COLORREF g_textColor = RGB(255, 255, 255);
 int g_fontSize = 13;
 int g_iconFontSize = 16;
 bool g_debugLogs = false;
-bool g_injectToSysTray = false;
+bool g_injectToSysTray = true;
+
+std::atomic<bool> g_taskbarViewDllLoaded = false;
+bool g_modUnloaded = false;
 
 double g_panelFontScale = 1.0;
 bool g_hkWin = false;
@@ -297,14 +300,13 @@ ID2D1Factory* g_pD2DFactory = nullptr;
 IDWriteFactory* g_pDWriteFactory = nullptr;
 
 extern HWND g_hSubclassedWnd;
+void CleanupXamlMedia(winrt::Windows::UI::Xaml::UIElement const& element);
+void InvalidateClockParentRegion(HWND hWnd);
+static bool g_inInternalResize = false;
 bool IsWindows11();
 void AlignOverlayWindow();
 void RestoreDefaultWindowSize(HWND hwndToClean);
 int GetRequiredWeatherWidth(HWND hWnd);
-void InvalidateClockParentRegion(HWND hWnd);
-static bool g_inInternalResize = false;
-void ForceTaskbarUpdateOriginal();
-void CleanupXamlMedia(winrt::Windows::UI::Xaml::UIElement const& element);
 
 std::pair<std::wstring, std::wstring> GetCodeMapping(int code);
 
@@ -346,15 +348,10 @@ HWND FindSystemClockWnd() {
 }
 
 HWND FindTrayNotifyWnd() {
-    HWND hShell = NULL;
-    while ((hShell = FindWindowExW(NULL, hShell, L"Shell_TrayWnd", NULL))) {
-        DWORD processId;
-        GetWindowThreadProcessId(hShell, &processId);
-        if (processId == GetCurrentProcessId()) {
-            return FindWindowExW(hShell, NULL, L"TrayNotifyWnd", NULL);
-        }
-    }
-    return NULL;
+    HWND hShell = FindWindowW(L"Shell_TrayWnd", NULL);
+    if (!hShell)
+        return NULL;
+    return FindWindowExW(hShell, NULL, L"TrayNotifyWnd", NULL);
 }
 
 HWND FindTrayClockWnd() {
@@ -1911,7 +1908,7 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
             (g_density == 2) ? 1.0 : ((g_density == 1) ? 1.5 : 2.0);
         buttonElement.Padding(
             isHorizontal ? Thickness{padLeftRight, padTopBottom, padLeftRight, padTopBottom}
-                         : Thickness{padTopBottom, padLeftRight, padTopBottom, padLeftRight});
+                         : Thickness{0, 0, 0, 0});
         buttonElement.VerticalAlignment(VerticalAlignment::Stretch);
         buttonElement.HorizontalAlignment(HorizontalAlignment::Stretch);
 
@@ -1936,6 +1933,9 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         stackPanel.Spacing(isHorizontal ? spacingVal : 1.0);
         stackPanel.VerticalAlignment(VerticalAlignment::Center);
         stackPanel.HorizontalAlignment(isHorizontal ? HorizontalAlignment::Left : HorizontalAlignment::Center);
+        if (!isHorizontal) {
+            stackPanel.MaxWidth(42.0);
+        }
 
         winrt::Windows::UI::Color xamlColor;
         xamlColor.A = 255;
@@ -1944,12 +1944,17 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         xamlColor.B = GetBValue(g_textColor);
         SolidColorBrush foregroundBrush{xamlColor};
 
+        double actualIconSize = (double)g_iconFontSize;
+        if (!isHorizontal && !g_injectToSysTray) {
+            actualIconSize = (double)g_iconFontSize * 0.8; 
+        }
+
         if (g_weatherStyle == 1) {  // Segoe PUA or Segoe MDL2 Assets
             FontIcon iconBlock;
             iconBlock.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(
                 L"Segoe UI Symbol"));
             iconBlock.Glyph(icon);
-            iconBlock.FontSize((double)g_iconFontSize);
+            iconBlock.FontSize(actualIconSize);
             iconBlock.Foreground(foregroundBrush);
             iconBlock.VerticalAlignment(VerticalAlignment::Center);
             iconBlock.HorizontalAlignment(HorizontalAlignment::Center);
@@ -1962,7 +1967,7 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         } else {  // Emojis
             TextBlock iconBlock;
             iconBlock.Text(icon);
-            iconBlock.FontSize((double)g_iconFontSize);
+            iconBlock.FontSize(actualIconSize);
             iconBlock.VerticalAlignment(VerticalAlignment::Center);
             iconBlock.HorizontalAlignment(HorizontalAlignment::Center);
             stackPanel.Children().Append(iconBlock);
@@ -2003,8 +2008,12 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         if (!isHorizontal) {
             tempBlock.HorizontalAlignment(HorizontalAlignment::Center);
             tempBlock.TextAlignment(winrt::Windows::UI::Xaml::TextAlignment::Center);
+            tempBlock.MaxWidth(40.0);
+            tempBlock.TextTrimming(TextTrimming::CharacterEllipsis);
             condBlock.HorizontalAlignment(HorizontalAlignment::Center);
             condBlock.TextAlignment(winrt::Windows::UI::Xaml::TextAlignment::Center);
+            condBlock.MaxWidth(40.0);
+            condBlock.TextTrimming(TextTrimming::CharacterEllipsis);
         }
 
         if (acquired) {
@@ -2147,7 +2156,7 @@ std::wstring RequestHttpData(const std::wstring& host,
     if (!hSession)
         return L"";
 
-    WinHttpSetTimeouts(hSession, 3000, 3000, 4000, 4000);
+    WinHttpSetTimeouts(hSession, 6000, 6000, 10000, 10000);
 
     INTERNET_PORT port =
         secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
@@ -3349,6 +3358,13 @@ void RemoveInjectedFromPanel(winrt::Windows::UI::Xaml::Controls::Panel panel) {
                 std::wstring name(fe.Name());
                 if (name == L"WhWeatherHostGrid") {
                     children.RemoveAt(i);
+                } else {
+                    // Restore visibility for siblings
+                    try {
+                        fe.Opacity(1.0);
+                        fe.Visibility(Visibility::Visible);
+                        fe.IsHitTestVisible(true);
+                    } catch (...) {}
                 }
             }
         }
@@ -3650,8 +3666,6 @@ bool HookTaskbarViewDllSymbols(HMODULE module) {
     return HookSymbols(module, symbolHooks, ARRAYSIZE(symbolHooks));
 }
 
-std::atomic<bool> g_taskbarViewDllLoaded = false;
-
 typedef struct _UNICODE_STRING_MINI {
     USHORT Length;
     USHORT MaximumLength;
@@ -3719,7 +3733,6 @@ UINT g_msgHotkeyControl = 0;
 bool g_win10WeatherHovered = false;
 bool g_win10WeatherPressed = false;
 bool g_win10TrackingMouse = false;
-bool g_modUnloaded = false;
 int g_lastAddedWeatherWidth = 115;
 
 typedef BOOL (WINAPI *PFN_ALPHABLEND)(HDC, int, int, int, int, HDC, int, int, int, int, BLENDFUNCTION);
@@ -5615,10 +5628,10 @@ void Wh_ModUninit() {
         g_currentAddedWeatherWidth = 0;
     }
     LeaveCriticalSection(&g_subclassLock);
-
+    Wh_Log(L"Finished Critical section unload");
     // 2. Clean up XAML and its child windows directly across all threads
     EnumWindows(CleanupXamlWindowsCallback, 0);
-
+Wh_Log(L"Finished Cleanup Xaml Windows");
     // 3. Wait for background threads to terminate
     if (g_hQueryThread) {
         WaitForSingleObject(g_hQueryThread, 5000);
@@ -5642,7 +5655,7 @@ void Wh_ModUninit() {
         CloseHandle(g_hForceUpdateEvent);
         g_hForceUpdateEvent = NULL;
     }
-
+Wh_Log(L"closed handles");
     // Give time for window destruction messages to process before unregistering the class
     Sleep(50);
     UnregisterClassW(L"WhWin10ForecastPopupClass", GetModuleHandleW(NULL));
@@ -5687,7 +5700,7 @@ void Wh_ModUninit() {
         } catch (...) {
         }
     }
-
+Wh_Log(L"unloded forcast grid");
     DeleteCriticalSection(&g_forecastLock);
     DeleteCriticalSection(&g_subclassLock);
 
@@ -5701,14 +5714,56 @@ void Wh_ModUninit() {
     }
 
     BufferedPaintUnInit();
+    Wh_Log(L"finished uninit");
 }
+
 
 // Settings update receiver
 void Wh_ModSettingsChanged() {
     if (!g_isShellProcess) {
         return;
     }
+    bool oldInjectToSysTray = g_injectToSysTray;
     LoadModConfiguration();
+
+    // If injection target changed, explicitly clean up old injection before re-scanning
+    if (oldInjectToSysTray != g_injectToSysTray) {
+        {
+            std::lock_guard<std::mutex> lock(g_pendingMutex);
+            g_scannedFrames.clear();
+        }
+        
+        FrameworkElement targetElement = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_weatherGridMutex);
+            if (g_injectedWeatherGrid) {
+                targetElement = g_injectedWeatherGrid.get();
+                g_injectedWeatherGrid = nullptr;
+            }
+        }
+        if (targetElement) {
+            try {
+                auto dispatcher = targetElement.Dispatcher();
+                if (dispatcher) {
+                    dispatcher.RunAsync(
+                        winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+                        [targetElement]() {
+                            try {
+                                if (auto parent = targetElement.Parent().try_as<winrt::Windows::UI::Xaml::Controls::Panel>()) {
+                                    RemoveInjectedFromPanel(parent);
+                                } else if (auto grid = targetElement.Parent().try_as<Grid>()) {
+                                    RemoveInjectedFromGrid(grid);
+                                }
+                            } catch (...) {}
+                        });
+                }
+            } catch (...) {}
+        }
+        
+        // Trigger a re-scan of the taskbar to find the new target
+        ForceTaskbarUpdateOriginal();
+    }
+
     AlignOverlayWindow();
     if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd)) {
         SetWindowPos(g_hSubclassedWnd, NULL, 0, 0, 0, 0,
