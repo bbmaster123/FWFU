@@ -3766,12 +3766,12 @@ FrameworkElement FindElementInTree(FrameworkElement root, const std::wstring& ta
     return nullptr;
 }
 
-// Helper for bbmaster123 to find TaskListButtonPanel inside AugmentedEntryPoint
+// Helper to find TaskListButtonPanel inside AugmentedEntryPoint
 FrameworkElement FindTaskListButtonPanel(FrameworkElement root) {
     return FindElementInTree(root, L"ExperienceToggleButtonRootPanel", L"TaskListButtonPanel");
 }
 
-// Helper for bbmaster123 to apply Height and MinHeight safely to TaskListButtonPanel
+// Helper to apply Height and MinHeight safely to TaskListButtonPanel
 void ApplyTaskListButtonPanelHeight(FrameworkElement target, bool isHorizontalLocal) {
     if (!target) return;
     try {
@@ -3804,7 +3804,7 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                 element.Width(152);
             }
 
-            // Adjust TaskListButtonPanel height for bbmaster123 on vertical taskbars
+            // Adjust TaskListButtonPanel height on vertical taskbars
             try {
                 if (auto target = FindTaskListButtonPanel(element)) {
                     ApplyTaskListButtonPanelHeight(target, isHorizontal);
@@ -3856,7 +3856,7 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                                                     isHorizontalLocal = (trayRect.right - trayRect.left) > (trayRect.bottom - trayRect.top);
                                                 }
                                             }
-                                            // Adjust height for bbmaster123 on vertical taskbars
+                                            // Adjust height on vertical taskbars
                                             if (auto target = FindTaskListButtonPanel(el2)) {
                                                 ApplyTaskListButtonPanelHeight(target, isHorizontalLocal);
                                             }
@@ -6269,7 +6269,11 @@ BOOL Wh_ModInit() {
     g_hForceUpdateEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     LoadModConfiguration();
+    if (!IsWindows11()) {
+            // Create dedicated popup STA thread
+    g_hPopupThread = CreateThread(NULL, 0, PopupThreadProc, NULL, 0, &g_dwPopupThreadId);
 
+    }
     g_bThreadShouldTerm = false;
 
     // Background weather crawl
@@ -6305,6 +6309,14 @@ BOOL Wh_ModInit() {
 }
 
 // Windhawk mod Exit Point
+BOOL CALLBACK CleanupXamlWindowsCallback(HWND hWnd, LPARAM lParam) {
+    WCHAR className[256];
+    if (GetClassNameW(hWnd, className, 256) && wcscmp(className, L"WhWin10ForecastPopupClass") == 0) {
+        SendMessageW(hWnd, WM_USER + 4246, 0, 0);
+    }
+    return TRUE;
+}
+
 void Wh_ModUninit() {
     if (!g_isShellProcess) {
         return;
@@ -6367,6 +6379,12 @@ void Wh_ModUninit() {
         }
         CloseHandle(g_hWatchdogThread);
         g_hWatchdogThread = NULL;
+    }
+    
+        if (g_hPopupThread) {
+        WaitForSingleObject(g_hPopupThread, 3000);
+        CloseHandle(g_hPopupThread);
+        g_hPopupThread = NULL;
     }
 
     if (g_hForceUpdateEvent) {
