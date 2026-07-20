@@ -194,6 +194,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 UINT g_hkVk = 0;
 HHOOK g_hKeyboardHook = NULL;
 bool g_hotkeyRegistered = false;
+bool g_registerHotKeySucceeded = false;
 int g_currentAddedWeatherWidth = 0;
 bool g_lastWasHorizontal = true;
 int g_cleanCx = 0;
@@ -202,6 +203,8 @@ int g_cleanX = 0;
 int g_cleanY = 0;
 
 HHOOK g_hMouseHook = NULL;
+HWINEVENTHOOK g_hForegroundEventHook = NULL;
+void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
 void ForceTaskbarUpdateOriginal();
 
@@ -577,6 +580,10 @@ winrt::Windows::UI::Xaml::Controls::Flyout CreateForecastFlyout(
         if (g_hMouseHook) {
             UnhookWindowsHookEx(g_hMouseHook);
             g_hMouseHook = NULL;
+        }
+        if (g_hForegroundEventHook) {
+            UnhookWinEvent(g_hForegroundEventHook);
+            g_hForegroundEventHook = NULL;
         }
         });
 
@@ -2145,6 +2152,17 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                         HMODULE hMod = NULL;
                         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)LowLevelMouseProc, &hMod);
                         g_hMouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, hMod, 0);
+                    }
+                    if (!g_hForegroundEventHook && !g_injectToSysTray) {
+                        g_hForegroundEventHook = SetWinEventHook(
+                            EVENT_SYSTEM_FOREGROUND,
+                            EVENT_SYSTEM_FOREGROUND,
+                            NULL,
+                            WinEventProc,
+                            0,
+                            0,
+                            WINEVENT_OUTOFCONTEXT
+                        );
                     }
                 }
                 catch (...) {}
@@ -4536,7 +4554,10 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
             DrawColorEmojiDirect2D(drawDc, icon, rcEmoji, baseIconSize);
         }
         else {
-            DrawTextAlpha(hFontIcon, icon, rcIcon, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX | DT_NOCLIP, false, iconCol);
+            RECT rcVector = rcIcon;
+            rcVector.top -= 3; // Move vector icon up 3 pixels on Windows 10
+            rcVector.bottom -= 3;
+            DrawTextAlpha(hFontIcon, icon, rcVector, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX | DT_NOCLIP, false, iconCol);
         }
 
         int tempY = startY + iconH + stackSpacing;
@@ -4565,7 +4586,10 @@ void PaintWin10Weather(HWND hWnd, HDC hdc) {
             DrawColorEmojiDirect2D(drawDc, icon, rcEmoji, baseIconSize);
         }
         else {
-            DrawTextAlpha(hFontIcon, icon, rcIcon, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_NOCLIP, false, iconCol);
+            RECT rcVector = rcIcon;
+            rcVector.top -= 3; // Move vector icon up 3 pixels on Windows 10
+            rcVector.bottom -= 3;
+            DrawTextAlpha(hFontIcon, icon, rcVector, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_NOCLIP, false, iconCol);
         }
 
         int textLeft = startX + szIcon.cx + spacing;
@@ -4649,6 +4673,10 @@ void CleanupXamlMedia(winrt::Windows::UI::Xaml::UIElement const& element) {
 }
 
 void HideWin10PopupInternal(HWND hWnd) {
+    if (g_hForegroundEventHook) {
+        UnhookWinEvent(g_hForegroundEventHook);
+        g_hForegroundEventHook = NULL;
+    }
     if (hWnd && IsWindow(hWnd)) {
         ShowWindow(hWnd, SW_HIDE);
         ThreadXamlState& state = GetThreadXamlState();
@@ -4749,6 +4777,10 @@ LRESULT CALLBACK Win10PopupWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
         return 1;
     }
     else if (uMsg == WM_DESTROY) {
+        if (g_hForegroundEventHook) {
+            UnhookWinEvent(g_hForegroundEventHook);
+            g_hForegroundEventHook = NULL;
+        }
         if (state.source) {
             try {
                 state.source.Close();
@@ -5221,6 +5253,18 @@ void ShowWin10ForecastPopupInternal(HWND hClock) {
             SetWindowPos(state.popupHwnd, NULL, (int)offsetX, (int)offsetY, physicalWidth, physicalHeight, SWP_NOZORDER | SWP_NOACTIVATE);
             ShowWindow(state.popupHwnd, SW_SHOW);
 
+            if (!g_hForegroundEventHook) {
+                g_hForegroundEventHook = SetWinEventHook(
+                    EVENT_SYSTEM_FOREGROUND,
+                    EVENT_SYSTEM_FOREGROUND,
+                    NULL,
+                    WinEventProc,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT
+                );
+            }
+
             // Force activation/focus so dismissal on click-away (WA_INACTIVE) triggers reliably
             SetForegroundWindow(state.popupHwnd);
             SetActiveWindow(state.popupHwnd);
@@ -5379,14 +5423,21 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
     if (uMsg == WM_HOTKEY) {
         if (wParam == 4242) {
             try {
-                ThreadXamlState& state = GetThreadXamlState();
-                if (state.popupHwnd && IsWindowVisible(state.popupHwnd)) {
-                    g_lastHideTickCount = GetTickCount();
-                    HideWin10Popup(state.popupHwnd);
+                if (ShouldUseXamlTaskbar()) {
+                    // Windows 11: toggle the flyout
+                    PostMessageW(hWnd, WM_USER + 4242, 0, 0);
                 }
                 else {
-                    if (GetTickCount() - g_lastHideTickCount > 250) {
-                        ShowWin10ForecastPopup(hWnd);
+                    // Windows 10: toggle the popup
+                    ThreadXamlState& state = GetThreadXamlState();
+                    if (state.popupHwnd && IsWindowVisible(state.popupHwnd)) {
+                        g_lastHideTickCount = GetTickCount();
+                        HideWin10Popup(state.popupHwnd);
+                    }
+                    else {
+                        if (GetTickCount() - g_lastHideTickCount > 250) {
+                            ShowWin10ForecastPopup(hWnd);
+                        }
                     }
                 }
             }
@@ -5398,10 +5449,27 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
     if (g_msgHotkeyControl && uMsg == g_msgHotkeyControl) {
         if (g_hotkeyRegistered) {
             if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = NULL; }
-        if (g_hMouseHook) { UnhookWindowsHookEx(g_hMouseHook); g_hMouseHook = NULL; }
+            if (g_hMouseHook) { UnhookWindowsHookEx(g_hMouseHook); g_hMouseHook = NULL; }
+            UnregisterHotKey(hWnd, 4242);
+            g_registerHotKeySucceeded = false;
             g_hotkeyRegistered = false;
         }
         if (wParam == 1 && g_hkVk != 0) {
+            UINT fsModifiers = MOD_NOREPEAT;
+            if (g_hkWin) fsModifiers |= MOD_WIN;
+            if (g_hkAlt) fsModifiers |= MOD_ALT;
+            if (g_hkCtrl) fsModifiers |= MOD_CONTROL;
+            if (g_hkShift) fsModifiers |= MOD_SHIFT;
+
+            if (RegisterHotKey(hWnd, 4242, fsModifiers, g_hkVk)) {
+                g_registerHotKeySucceeded = true;
+                if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] Registered global hotkey via RegisterHotKey successfully!");
+            }
+            else {
+                g_registerHotKeySucceeded = false;
+                if (g_debugLogs) Wh_Log(L"[Wh_WeatherHost] RegisterHotKey failed with error %u, falling back to low-level keyboard hook", GetLastError());
+            }
+
             if (!g_hKeyboardHook) {
                 HMODULE hMod = NULL;
                 GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)LowLevelKeyboardProc, &hMod);
@@ -5858,7 +5926,7 @@ void AlignOverlayWindow() {
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION && g_hkVk != 0) {
+    if (nCode == HC_ACTION && g_hkVk != 0 && !g_registerHotKeySucceeded) {
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
             KBDLLHOOKSTRUCT* pKbd = (KBDLLHOOKSTRUCT*)lParam;
             if (pKbd->vkCode == g_hkVk) {
@@ -5914,6 +5982,51 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
         }
     }
     return CallNextHookEx(g_hMouseHook, nCode, wParam, lParam);
+}
+
+void CALLBACK WinEventProc(
+    HWINEVENTHOOK hWinEventHook,
+    DWORD event,
+    HWND hwnd,
+    LONG idObject,
+    LONG idChild,
+    DWORD dwEventThread,
+    DWORD dwmsEventTime
+) {
+    if (event == EVENT_SYSTEM_FOREGROUND) {
+        ThreadXamlState& state = GetThreadXamlState();
+        if (state.popupHwnd && hwnd == state.popupHwnd) {
+            return;
+        }
+        if (state.sourceHwnd && hwnd == state.sourceHwnd) {
+            return;
+        }
+
+        HWND hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+        if (hwnd == hTaskbar || GetAncestor(hwnd, GA_ROOT) == hTaskbar) {
+            return;
+        }
+
+        wchar_t className[256];
+        if (hwnd && GetClassNameW(hwnd, className, 256)) {
+            if (wcscmp(className, L"Windows.UI.Core.CoreWindow") == 0 ||
+                wcscmp(className, L"DesktopWindowXamlSource") == 0 ||
+                wcscmp(className, L"PopupHost") == 0 ||
+                wcscmp(className, L"Xaml_WindowedPopupClass") == 0) {
+                return;
+            }
+        }
+
+        if (g_win11FlyoutIsOpen) {
+            if (g_hSubclassedWnd) {
+                PostMessageW(g_hSubclassedWnd, WM_USER + 4242, 0, 0);
+            }
+        }
+        else if (state.popupHwnd && IsWindowVisible(state.popupHwnd)) {
+            g_lastHideTickCount = GetTickCount();
+            HideWin10Popup(state.popupHwnd);
+        }
+    }
 }
 
 void LoadModConfiguration() {
