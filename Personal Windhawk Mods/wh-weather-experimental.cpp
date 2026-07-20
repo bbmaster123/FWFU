@@ -1782,7 +1782,7 @@ void PopulateForecastUI(winrt::Windows::UI::Xaml::Controls::Grid rootGrid,
                 dateBorder.Background(SolidColorBrush{ winrt::Windows::UI::ColorHelper::FromArgb(64, 128, 128, 128) });
                 dateBorder.Padding(Thickness{ 3, 0, 3, 0 });
                 dateBorder.VerticalAlignment(VerticalAlignment::Center);
-                dateBorder.Margin(Thickness{ 4, 1, -2, 0 });
+                dateBorder.Margin(Thickness{ 4, 0, -2, 0 });
 
                 TextBlock tDate;
                 tDate.Text(dayNum);
@@ -4148,6 +4148,7 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName,
 }
 
 HWND g_hSubclassedWnd = NULL;
+HWND g_hSubclassedTaskListWnd = NULL;
 UINT g_msgHotkeyControl = 0;
 
 bool g_win10WeatherHovered = false;
@@ -4963,6 +4964,8 @@ void ShowWin10ForecastPopup(HWND hClock) {
     ThreadXamlState& state = GetThreadXamlState();
     if (state.popupHwnd && IsWindow(state.popupHwnd)) {
         PostMessageW(state.popupHwnd, WM_USER + 5001, (WPARAM)hClock, 0);
+    } else {
+        ShowWin10ForecastPopupInternal(hClock);
     }
 }
 
@@ -5325,6 +5328,49 @@ void RestoreDefaultWindowSize(HWND hwndToClean) {
     g_cleanY = 0;
 }
 
+HWND FindTaskListWndForTaskbar(HWND hTaskbar) {
+    if (!hTaskbar) return NULL;
+    HWND hReBar = FindWindowExW(hTaskbar, nullptr, L"ReBarWindow32", nullptr);
+    if (hReBar) {
+        return FindWindowExW(hReBar, nullptr, L"MSTaskSwWClass", nullptr);
+    }
+    return FindWindowExW(hTaskbar, nullptr, L"MSTaskSwWClass", nullptr);
+}
+
+LRESULT CALLBACK TaskListSubclassWndProc(HWND hWnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    DWORD_PTR dwRefData) {
+    
+    if (g_modUnloaded) {
+        return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    if (uMsg == WM_WINDOWPOSCHANGING) {
+        WINDOWPOS* lpwp = (WINDOWPOS*)lParam;
+        if (!(lpwp->flags & SWP_NOSIZE)) {
+            HWND hParentTaskbar = GetAncestor(hWnd, GA_ROOT);
+            RECT trayRect;
+            if (hParentTaskbar && GetWindowRect(hParentTaskbar, &trayRect)) {
+                bool isHorizontal = (trayRect.right - trayRect.left) > (trayRect.bottom - trayRect.top);
+                int shiftAmount = g_currentAddedWeatherWidth + g_itemsRepeaterOffset;
+                if (isHorizontal) {
+                    if (lpwp->cx > shiftAmount) {
+                        lpwp->cx -= shiftAmount;
+                    }
+                }
+                else {
+                    if (lpwp->cy > shiftAmount) {
+                        lpwp->cy -= shiftAmount;
+                    }
+                }
+            }
+        }
+    }
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
 LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
     UINT uMsg,
     WPARAM wParam,
@@ -5537,6 +5583,9 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
             }
 
             g_currentAddedWeatherWidth = weatherWidth;
+            if (sizeChanged && g_hSubclassedTaskListWnd && IsWindow(g_hSubclassedTaskListWnd)) {
+                SetWindowPos(g_hSubclassedTaskListWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            }
             lpwp->flags |= SWP_NOCOPYBITS;
 
             if (g_debugLogs) {
@@ -5766,6 +5815,11 @@ void AlignOverlayWindow() {
             WindhawkUtils::RemoveWindowSubclassFromAnyThread(g_hSubclassedWnd, ClockSubclassWndProc);
             RestoreDefaultWindowSize(g_hSubclassedWnd);
         }
+        if (g_hSubclassedTaskListWnd && IsWindow(g_hSubclassedTaskListWnd)) {
+            WindhawkUtils::RemoveWindowSubclassFromAnyThread(g_hSubclassedTaskListWnd, TaskListSubclassWndProc);
+            SetWindowPos(g_hSubclassedTaskListWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            g_hSubclassedTaskListWnd = NULL;
+        }
         g_hSubclassedWnd = hTarget;
         g_currentAddedWeatherWidth = 0;
         g_cleanCx = 0;
@@ -5778,6 +5832,15 @@ void AlignOverlayWindow() {
                     L"[Wh_WeatherHost] Successfully subclassed Target HWND=%p "
                     L"(XamlTaskbar=%d)",
                     hTarget, ShouldUseXamlTaskbar());
+            }
+            if (!ShouldUseXamlTaskbar()) {
+                HWND hParentTaskbar = GetAncestor(hTarget, GA_ROOT);
+                HWND hTaskList = FindTaskListWndForTaskbar(hParentTaskbar);
+                if (hTaskList) {
+                    g_hSubclassedTaskListWnd = hTaskList;
+                    WindhawkUtils::SetWindowSubclassFromAnyThread(hTaskList, TaskListSubclassWndProc, NULL);
+                    SetWindowPos(hTaskList, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+                }
             }
             PostMessageW(hTarget, g_msgHotkeyControl, 1, 0); // Register hotkey on UI thread
 
@@ -6158,6 +6221,11 @@ void Wh_ModUninit() {
         WindhawkUtils::RemoveWindowSubclassFromAnyThread(hwndToClean, ClockSubclassWndProc);
         g_hSubclassedWnd = NULL;
         g_currentAddedWeatherWidth = 0;
+    }
+    if (g_hSubclassedTaskListWnd && IsWindow(g_hSubclassedTaskListWnd)) {
+        WindhawkUtils::RemoveWindowSubclassFromAnyThread(g_hSubclassedTaskListWnd, TaskListSubclassWndProc);
+        SetWindowPos(g_hSubclassedTaskListWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        g_hSubclassedTaskListWnd = NULL;
     }
     LeaveCriticalSection(&g_subclassLock);
 
