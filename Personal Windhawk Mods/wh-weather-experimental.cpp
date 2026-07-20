@@ -5484,6 +5484,11 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
         try {
             if (ShouldUseXamlTaskbar()) {
                 if (auto button = g_weakXamlWeatherButton.get()) {
+                    if (g_activeFlyout && g_win11FlyoutIsOpen) {
+                        try { g_activeFlyout.Hide(); } catch(...) {}
+                        return 0;
+                    }
+
                     if (!g_win11FlyoutIsOpen) {
                         if (g_hSubclassedWnd) {
                             HWND hRoot = GetAncestor(g_hSubclassedWnd, GA_ROOT);
@@ -6411,6 +6416,7 @@ void Wh_ModUninit() {
     // Release all global WinRT references immediately before DLL unload
     g_showWin11Flyout = nullptr;
     g_activeFlyout = nullptr;
+    g_weakXamlWeatherButton = nullptr;
 
     DeleteCriticalSection(&g_forecastLock);
     DeleteCriticalSection(&g_subclassLock);
