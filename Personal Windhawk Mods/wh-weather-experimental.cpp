@@ -6311,6 +6311,7 @@ void Wh_ModUninit() {
     }
 
         // Tell the popup thread to tear down gracefully
+    if (IsWindows11()) {
     if (g_dwPopupThreadId) {
         PostThreadMessageW(g_dwPopupThreadId, WM_USER + 6003, 0, 0);
         if (g_hPopupThread) {
@@ -6320,7 +6321,8 @@ void Wh_ModUninit() {
         }
         g_dwPopupThreadId = 0;
     }
-    
+    }
+
     if (g_debugLogs)
         Wh_Log(L"[EP_WeatherHost] Unloading mod...");
 
