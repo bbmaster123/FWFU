@@ -1,3 +1,4 @@
+#include <limits>
 // ==WindhawkMod==
 // @id              wh-weather
 // @name            Windhawk Weather
@@ -58,8 +59,6 @@
   $name: Horizontal Offset (Pixels)
 - textColor: "#FFFFFF"
   $name: Text Color
-- fontSize: 13
-  $name: Primary Weather Text Font Size
 - iconFontSize: 16
   $name: Weather Icon Font Size
 - line1FontFamily: "Segoe UI"
@@ -326,6 +325,24 @@ std::pair<std::wstring, std::wstring> GetCodeMapping(int code);
 // Injected Grid reference
 winrt::weak_ref<Grid> g_injectedWeatherGrid = nullptr;
 std::mutex g_weatherGridMutex;
+
+#include <set>
+
+struct HookRecord {
+    winrt::weak_ref<winrt::Windows::UI::Xaml::FrameworkElement> weakElement;
+    winrt::event_token token;
+};
+extern std::vector<HookRecord> g_sizeChangedHooks;
+extern std::mutex g_hooksMutex;
+
+extern std::set<void*> g_hookedElements;
+extern std::mutex g_hookedMutex;
+
+std::vector<HookRecord> g_sizeChangedHooks;
+std::mutex g_hooksMutex;
+std::set<void*> g_hookedElements;
+std::mutex g_hookedMutex;
+
 winrt::Windows::UI::Core::CoreDispatcher g_dispatcher{ nullptr };
 winrt::weak_ref<FrameworkElement> g_capturedTaskbarFrame = nullptr;
 
@@ -420,6 +437,14 @@ bool ShouldUseXamlTaskbar();
 void UpdateInjectedWeatherLayout(Grid weatherGrid) {
     if (!weatherGrid)
         return;
+    
+    auto safeSetMargin = [](FrameworkElement el, Thickness margin) {
+        auto current = el.Margin();
+        if (current.Left != margin.Left || current.Top != margin.Top || current.Right != margin.Right || current.Bottom != margin.Bottom) {
+            el.Margin(margin);
+        }
+    };
+    
     try {
         HWND hAnchor = FindSystemAnchorWnd();
         if (hAnchor) {
@@ -443,12 +468,12 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
                 if (isHorizontal) {
                     if (g_injectToSysTray) {
                         try {
-                            weatherGrid.Height(40.0);
-                            weatherGrid.MinHeight(40.0);
+                            if (std::isnan(weatherGrid.Height()) || weatherGrid.Height() != 40.0) weatherGrid.Height(40.0);
+                            if (std::isnan(weatherGrid.MinHeight()) || weatherGrid.MinHeight() != 40.0) weatherGrid.MinHeight(40.0);
                         } catch (...) {}
                         weatherGrid.HorizontalAlignment(HorizontalAlignment::Right);
                         weatherGrid.VerticalAlignment(VerticalAlignment::Center);
-                        weatherGrid.Margin(Thickness{ 0, 0, (double)marginFromRight, 0 });
+                        safeSetMargin(weatherGrid, Thickness{ 0, 0, (double)marginFromRight, 0 });
 
                         // Reserve space next to the sibling TaskbarFrameRepeater/ItemsRepeater
                         try {
@@ -461,7 +486,7 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
                                         if (auto sibling = siblings.GetAt(i).try_as<FrameworkElement>()) {
                                             std::wstring sibClass(winrt::get_class_name(sibling).c_str());
                                             if (sibClass.find(L"Repeater") != std::wstring::npos || sibClass.find(L"TaskbarFrameRepeater") != std::wstring::npos) {
-                                                sibling.Margin(Thickness{ 0, 0, (double)marginFromRight + (double)g_itemsRepeaterOffset, 0 });
+                                                safeSetMargin(sibling, Thickness{ 0, 0, (double)marginFromRight + (double)g_itemsRepeaterOffset, 0 });
                                             }
                                         }
                                     }
@@ -473,23 +498,23 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
                     }
                     else {
                         try {
-                            weatherGrid.ClearValue(FrameworkElement::HeightProperty());
-                            weatherGrid.ClearValue(FrameworkElement::MinHeightProperty());
+                            if (!std::isnan(weatherGrid.Height())) weatherGrid.Height(std::numeric_limits<double>::quiet_NaN());
+                            if (!std::isnan(weatherGrid.MinHeight())) weatherGrid.MinHeight(0.0);
                         } catch (...) {}
                         weatherGrid.HorizontalAlignment(HorizontalAlignment::Stretch);
                         weatherGrid.VerticalAlignment(VerticalAlignment::Stretch);
-                        weatherGrid.Margin(Thickness{ 0, 0, 0, 0 });
+                        safeSetMargin(weatherGrid, Thickness{ 0, 0, 0, 0 });
                     }
                 }
                 else {
                     try {
-                        weatherGrid.Height(60.0);
-                        weatherGrid.MinHeight(60.0);
+                        if (!std::isnan(weatherGrid.Height())) weatherGrid.Height(std::numeric_limits<double>::quiet_NaN());
+                        if (!std::isnan(weatherGrid.MinHeight())) weatherGrid.MinHeight(0.0);
                     } catch (...) {}
                     weatherGrid.HorizontalAlignment(HorizontalAlignment::Stretch);
                     weatherGrid.VerticalAlignment(g_injectToSysTray ? VerticalAlignment::Bottom : VerticalAlignment::Center);
                     if (g_injectToSysTray) {
-                        weatherGrid.Margin(
+                        safeSetMargin(weatherGrid, 
                             Thickness{ 0, 0, 0,
                                       (double)(trayRect.bottom - anchorRect.top -
                                                g_textOffset) });
@@ -504,7 +529,7 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
                                         if (auto sibling = siblings.GetAt(i).try_as<FrameworkElement>()) {
                                             std::wstring sibClass(winrt::get_class_name(sibling).c_str());
                                             if (sibClass.find(L"Repeater") != std::wstring::npos || sibClass.find(L"TaskbarFrameRepeater") != std::wstring::npos) {
-                                                sibling.Margin(Thickness{ 0, 0, 0, (double)(trayRect.bottom - anchorRect.top - g_textOffset) + (double)(g_itemsRepeaterOffset / 1.5) });
+                                                safeSetMargin(sibling, Thickness{ 0, 0, 0, (double)(trayRect.bottom - anchorRect.top - g_textOffset) + (double)(g_itemsRepeaterOffset / 1.5) });
                                             }
                                         }
                                     }
@@ -515,7 +540,7 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
                         catch (...) {}
                     }
                     else {
-                        weatherGrid.Margin(Thickness{ 0, 0, 0, 0 });
+                        safeSetMargin(weatherGrid, Thickness{ 0, 0, 0, 0 });
                     }
                 }
             }
@@ -523,7 +548,7 @@ void UpdateInjectedWeatherLayout(Grid weatherGrid) {
         else {
             weatherGrid.HorizontalAlignment(HorizontalAlignment::Right);
             weatherGrid.VerticalAlignment(VerticalAlignment::Center);
-            weatherGrid.Margin(Thickness{ 0, 0, 100, 0 });
+            safeSetMargin(weatherGrid, Thickness{ 0, 0, 100, 0 });
         }
     }
     catch (...) {
@@ -557,14 +582,17 @@ bool IsSystemDarkMode() {
     return true;  // Default to dark
 }
 
+static bool g_btnIsHovered = false;
+static bool g_btnIsPressed = false;
+
 void UpdateWeatherButtonVisuals(
     winrt::Windows::UI::Xaml::Controls::Button btn,
     bool isHovered,
     bool isPressed,
     bool isFlyoutOpen) {
     if (!btn) return;
-    bool isDark = IsSystemDarkMode();
     
+    bool isDark = IsSystemDarkMode();
     winrt::Windows::UI::Color bg;
     winrt::Windows::UI::Color border;
     
@@ -601,15 +629,25 @@ void UpdateWeatherButtonVisuals(
     try {
         btn.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush{ bg });
         btn.BorderBrush(winrt::Windows::UI::Xaml::Media::SolidColorBrush{ border });
-        btn.BorderThickness(winrt::Windows::UI::Xaml::Thickness{ 1, 1, 1, 1 });
+        btn.BorderThickness(winrt::Windows::UI::Xaml::Thickness{ 1.0, 1.0, 1.0, 1.0 });
         try {
-            btn.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 5.0, 5.0, 5.0, 5.0 });
+            btn.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 4.0, 4.0, 4.0, 4.0 });
         } catch (...) {}
 
-        if (auto innerBorder = btn.Content().try_as<winrt::Windows::UI::Xaml::Controls::Border>()) {
-            innerBorder.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush{ winrt::Windows::UI::Colors::Transparent() });
-            innerBorder.BorderBrush(winrt::Windows::UI::Xaml::Media::SolidColorBrush{ winrt::Windows::UI::Colors::Transparent() });
-            innerBorder.BorderThickness(winrt::Windows::UI::Xaml::Thickness{ 0, 0, 0, 0 });
+        // Make inner template child background transparent to prevent double-layered native backgrounds
+        if (int count = winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetChildrenCount(btn)) {
+            if (count > 0) {
+                auto child = winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetChild(btn, 0);
+                if (auto innerBorder = child.try_as<winrt::Windows::UI::Xaml::Controls::Border>()) {
+                    innerBorder.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush{ winrt::Windows::UI::Colors::Transparent() });
+                    innerBorder.BorderBrush(winrt::Windows::UI::Xaml::Media::SolidColorBrush{ winrt::Windows::UI::Colors::Transparent() });
+                    innerBorder.BorderThickness(winrt::Windows::UI::Xaml::Thickness{ 0 });
+                    innerBorder.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 4.0, 4.0, 4.0, 4.0 });
+                } else if (auto innerGrid = child.try_as<winrt::Windows::UI::Xaml::Controls::Grid>()) {
+                    innerGrid.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush{ winrt::Windows::UI::Colors::Transparent() });
+                    innerGrid.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 4.0, 4.0, 4.0, 4.0 });
+                }
+            }
         }
     } catch (...) {}
 }
@@ -617,7 +655,7 @@ void UpdateWeatherButtonVisuals(
 void UpdateWeatherButtonActiveState(bool isOpen) {
     if (auto fe = g_weakXamlWeatherButton.get()) {
         if (auto btn = fe.try_as<winrt::Windows::UI::Xaml::Controls::Button>()) {
-            UpdateWeatherButtonVisuals(btn, false, false, isOpen);
+            UpdateWeatherButtonVisuals(btn, g_btnIsHovered, g_btnIsPressed, isOpen);
         }
     }
 }
@@ -674,7 +712,7 @@ winrt::Windows::UI::Xaml::Controls::Flyout CreateForecastFlyout(
         winrt::box_value(Thickness{ 0, 0, 0, 0 }));
     winrt::Windows::UI::Xaml::Setter cornerSetter(
         winrt::Windows::UI::Xaml::Controls::Control::CornerRadiusProperty(),
-        winrt::box_value(winrt::Windows::UI::Xaml::CornerRadius{ 8.0, 8.0, 8.0, 8.0 }));
+        winrt::box_value(winrt::Windows::UI::Xaml::CornerRadius{ 0, 0, 0, 0 }));
     // Override MaxWidth to allow wider flyout panels
     winrt::Windows::UI::Xaml::Setter maxWidthSetter(
         winrt::Windows::UI::Xaml::FrameworkElement::MaxWidthProperty(),
@@ -687,77 +725,249 @@ winrt::Windows::UI::Xaml::Controls::Flyout CreateForecastFlyout(
     flyoutStyle.Setters().Append(borSetter);
     flyoutStyle.Setters().Append(cornerSetter);
 
-    if (g_win11FlyoutAnimation) {
-        try {
-            using namespace winrt::Windows::UI::Xaml::Media::Animation;
-            using namespace winrt::Windows::UI::Xaml::Controls::Primitives;
+    bool isBottom = true;
+    bool isTop = false;
+    bool isLeft = false;
+    bool isRight = false;
 
-            TransitionCollection transitions;
-            PaneThemeTransition paneAnim;
+    HWND hAnchor = FindSystemAnchorWnd();
+    if (hAnchor) {
+        HWND hParentTaskbar = GetAncestor(hAnchor, GA_ROOT);
+        if (!hParentTaskbar) hParentTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+        if (hParentTaskbar) {
+            RECT trayRect;
+            GetWindowRect(hParentTaskbar, &trayRect);
+            HMONITOR hMon = MonitorFromRect(&trayRect, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi = { sizeof(mi) };
+            if (GetMonitorInfoW(hMon, &mi)) {
+                int trayWidth = trayRect.right - trayRect.left;
+                int trayHeight = trayRect.bottom - trayRect.top;
+                bool isHorizontal = trayWidth > trayHeight;
 
-            bool isBottom = true;
-            bool isTop = false;
-            bool isLeft = false;
-            bool isRight = false;
-
-            HWND hAnchor = FindSystemAnchorWnd();
-            if (hAnchor) {
-                HWND hParentTaskbar = GetAncestor(hAnchor, GA_ROOT);
-                if (!hParentTaskbar) hParentTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
-                if (hParentTaskbar) {
-                    RECT trayRect;
-                    GetWindowRect(hParentTaskbar, &trayRect);
-                    HMONITOR hMon = MonitorFromRect(&trayRect, MONITOR_DEFAULTTONEAREST);
-                    MONITORINFO mi = { sizeof(mi) };
-                    if (GetMonitorInfoW(hMon, &mi)) {
-                        int trayWidth = trayRect.right - trayRect.left;
-                        int trayHeight = trayRect.bottom - trayRect.top;
-                        bool isHorizontal = trayWidth > trayHeight;
-
-                        if (isHorizontal) {
-                            if (trayRect.top <= mi.rcMonitor.top + (mi.rcMonitor.bottom - mi.rcMonitor.top) / 2) {
-                                isTop = true;
-                                isBottom = false;
-                            } else {
-                                isBottom = true;
-                            }
-                        } else {
-                            isBottom = false;
-                            if (trayRect.left <= mi.rcMonitor.left + (mi.rcMonitor.right - mi.rcMonitor.left) / 2) {
-                                isLeft = true;
-                            } else {
-                                isRight = true;
-                            }
-                        }
+                if (isHorizontal) {
+                    if (trayRect.top <= mi.rcMonitor.top + (mi.rcMonitor.bottom - mi.rcMonitor.top) / 2) {
+                        isTop = true;
+                        isBottom = false;
+                    } else {
+                        isBottom = true;
+                    }
+                } else {
+                    isBottom = false;
+                    if (trayRect.left <= mi.rcMonitor.left + (mi.rcMonitor.right - mi.rcMonitor.left) / 2) {
+                        isLeft = true;
+                    } else {
+                        isRight = true;
                     }
                 }
             }
-
-            if (isBottom) {
-                paneAnim.Edge(EdgeTransitionLocation::Bottom);
-            } else if (isTop) {
-                paneAnim.Edge(EdgeTransitionLocation::Top);
-            } else if (isLeft) {
-                paneAnim.Edge(EdgeTransitionLocation::Left);
-            } else if (isRight) {
-                paneAnim.Edge(EdgeTransitionLocation::Right);
-            }
-
-            transitions.Append(paneAnim);
-            rootGrid.Transitions(transitions);
         }
-        catch (...) {}
     }
+
+    if (isBottom) {
+        rootGrid.Margin(winrt::Windows::UI::Xaml::Thickness{ 0, 0, 0, 16.0 });
+    } else if (isTop) {
+        rootGrid.Margin(winrt::Windows::UI::Xaml::Thickness{ 0, 16.0, 0, 0 });
+    } else if (isLeft) {
+        rootGrid.Margin(winrt::Windows::UI::Xaml::Thickness{ 16.0, 0, 0, 0 });
+    } else if (isRight) {
+        rootGrid.Margin(winrt::Windows::UI::Xaml::Thickness{ 0, 0, 16.0, 0 });
+    }
+
+    try {
+        rootGrid.Transitions(nullptr);
+    } catch (...) {}
+
+    winrt::Windows::UI::Xaml::Media::CompositeTransform rootTransform;
+    rootGrid.RenderTransform(rootTransform);
 
     flyout.FlyoutPresenterStyle(flyoutStyle);
     flyout.Content(rootGrid);
 
-    flyout.Opened([](auto const&, auto const&) {
-        g_win11FlyoutIsOpen = true;
-        UpdateWeatherButtonActiveState(true);
+    auto isClosingAnimating = std::make_shared<bool>(false);
+    auto isCloseAnimationDone = std::make_shared<bool>(false);
+
+    flyout.Closing([isClosingAnimating, isCloseAnimationDone, isTop, isLeft, isRight](
+        winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutBase const& sender,
+        winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutBaseClosingEventArgs const& args) {
+        
+        if (!g_win11FlyoutAnimation) return;
+
+        if (*isCloseAnimationDone) {
+            return;
+        }
+
+        if (*isClosingAnimating) {
+            args.Cancel(true);
+            return;
+        }
+
+        args.Cancel(true);
+        *isClosingAnimating = true;
+
+        try {
+            using namespace winrt::Windows::UI::Xaml::Media::Animation;
+            using namespace winrt::Windows::UI::Xaml::Media;
+
+            auto actualFlyout = sender.try_as<winrt::Windows::UI::Xaml::Controls::Flyout>();
+            auto contentGrid = actualFlyout ? actualFlyout.Content().try_as<winrt::Windows::UI::Xaml::Controls::Grid>() : nullptr;
+            if (contentGrid) {
+                try {
+                    contentGrid.Transitions(nullptr);
+                } catch (...) {}
+
+                CompositeTransform trans;
+                if (auto existingTrans = contentGrid.RenderTransform().try_as<CompositeTransform>()) {
+                    trans = existingTrans;
+                } else {
+                    trans = CompositeTransform{};
+                    contentGrid.RenderTransform(trans);
+                }
+
+                Storyboard storyboard;
+
+                DoubleAnimation slideAnim;
+                Storyboard::SetTarget(slideAnim, trans);
+
+                double panelH = 450.0;
+                double panelW = 570.0;
+                try {
+                    if (contentGrid.ActualHeight() > 50.0) panelH = contentGrid.ActualHeight();
+                    if (contentGrid.ActualWidth() > 50.0) panelW = contentGrid.ActualWidth();
+                } catch (...) {}
+
+                double targetOffset = panelH + 16.0;
+                if (isTop) {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateY");
+                    targetOffset = -(panelH + 16.0);
+                } else if (isLeft) {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateX");
+                    targetOffset = -(panelW + 16.0);
+                } else if (isRight) {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateX");
+                    targetOffset = panelW + 16.0;
+                } else {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateY");
+                    targetOffset = panelH + 16.0;
+                }
+
+                slideAnim.From(0.0);
+                slideAnim.To(targetOffset);
+                slideAnim.Duration(winrt::Windows::UI::Xaml::DurationHelper::FromTimeSpan(std::chrono::milliseconds(180)));
+
+                CubicEase cubicEase;
+                cubicEase.EasingMode(EasingMode::EaseIn);
+                slideAnim.EasingFunction(cubicEase);
+
+                storyboard.Children().Append(slideAnim);
+
+                auto finishClose = [flyout = sender, isClosingAnimating, isCloseAnimationDone]() {
+                    if (*isCloseAnimationDone) return;
+                    *isCloseAnimationDone = true;
+                    *isClosingAnimating = false;
+                    try {
+                        flyout.Hide();
+                    } catch (...) {}
+                };
+
+                storyboard.Completed([finishClose](auto const&, auto const&) {
+                    finishClose();
+                });
+
+                storyboard.Begin();
+
+                winrt::Windows::UI::Xaml::DispatcherTimer timer;
+                timer.Interval(std::chrono::milliseconds(220));
+                timer.Tick([timer, finishClose](auto const&, auto const&) mutable {
+                    timer.Stop();
+                    finishClose();
+                });
+                timer.Start();
+            } else {
+                *isCloseAnimationDone = true;
+                *isClosingAnimating = false;
+                sender.Hide();
+            }
+        } catch (...) {
+            *isCloseAnimationDone = true;
+            *isClosingAnimating = false;
+            sender.Hide();
+        }
     });
 
-    flyout.Closed([](auto const&, auto const&) {
+    flyout.Opened([isClosingAnimating, isCloseAnimationDone, rootGrid, isTop, isLeft, isRight](auto const&, auto const&) {
+        *isClosingAnimating = false;
+        *isCloseAnimationDone = false;
+        g_win11FlyoutIsOpen = true;
+        UpdateWeatherButtonActiveState(true);
+
+        if (g_win11FlyoutAnimation) {
+            try {
+                using namespace winrt::Windows::UI::Xaml::Media::Animation;
+                using namespace winrt::Windows::UI::Xaml::Media;
+
+                rootGrid.Transitions(nullptr);
+                rootGrid.Opacity(1.0);
+
+                CompositeTransform trans;
+                if (auto existingTrans = rootGrid.RenderTransform().try_as<CompositeTransform>()) {
+                    trans = existingTrans;
+                } else {
+                    trans = CompositeTransform{};
+                    rootGrid.RenderTransform(trans);
+                }
+
+                double panelH = 450.0;
+                double panelW = 570.0;
+                try {
+                    if (rootGrid.ActualHeight() > 50.0) panelH = rootGrid.ActualHeight();
+                    if (rootGrid.ActualWidth() > 50.0) panelW = rootGrid.ActualWidth();
+                } catch (...) {}
+
+                Storyboard storyboard;
+                DoubleAnimation slideAnim;
+                Storyboard::SetTarget(slideAnim, trans);
+
+                double startOffset = panelH + 16.0;
+                if (isTop) {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateY");
+                    startOffset = -(panelH + 16.0);
+                } else if (isLeft) {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateX");
+                    startOffset = -(panelW + 16.0);
+                } else if (isRight) {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateX");
+                    startOffset = panelW + 16.0;
+                } else {
+                    Storyboard::SetTargetProperty(slideAnim, L"TranslateY");
+                    startOffset = panelH + 16.0;
+                }
+
+                slideAnim.From(startOffset);
+                slideAnim.To(0.0);
+                slideAnim.Duration(winrt::Windows::UI::Xaml::DurationHelper::FromTimeSpan(std::chrono::milliseconds(200)));
+
+                CubicEase cubicEase;
+                cubicEase.EasingMode(EasingMode::EaseOut);
+                slideAnim.EasingFunction(cubicEase);
+
+                storyboard.Children().Append(slideAnim);
+                storyboard.Begin();
+            } catch (...) {}
+        } else {
+            try {
+                rootGrid.Transitions(nullptr);
+                rootGrid.Opacity(1.0);
+                if (auto trans = rootGrid.RenderTransform().try_as<winrt::Windows::UI::Xaml::Media::CompositeTransform>()) {
+                    trans.TranslateX(0.0);
+                    trans.TranslateY(0.0);
+                }
+            } catch (...) {}
+        }
+    });
+
+    flyout.Closed([isClosingAnimating, isCloseAnimationDone](auto const&, auto const&) {
+        *isClosingAnimating = false;
+        *isCloseAnimationDone = false;
         g_win11FlyoutIsOpen = false;
         g_activeFlyout = nullptr;
         g_flyoutWasOpenOnPointerPressed = false;
@@ -2166,17 +2376,17 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         buttonElement.Background(SolidColorBrush{ transColor });
         buttonElement.BorderBrush(nullptr);
         buttonElement.BorderThickness(Thickness{ 0 });
-
+        
         try {
             auto resources = winrt::Windows::UI::Xaml::Application::Current().Resources();
             winrt::Windows::UI::Xaml::Style targetStyle{ nullptr };
             std::vector<std::wstring> styleKeys = {
-                L"Taskbar.SystemTray.TrayButton",
                 L"TaskbarFrameRepeaterButtonStyle",
                 L"Taskbar.TaskbarFrameRepeaterButtonStyle",
-                L"Taskbar.TaskListButton",
+                L"TaskbarTopLevelButtonStyle",
                 L"DefaultButtonStyle"
             };
+            
             for (const auto& key : styleKeys) {
                 if (resources.HasKey(winrt::box_value(key))) {
                     targetStyle = resources.Lookup(winrt::box_value(key)).try_as<winrt::Windows::UI::Xaml::Style>();
@@ -2187,42 +2397,58 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                 }
             }
         } catch (...) {}
-
+        
         try {
-            buttonElement.CornerRadius(CornerRadius{ 5.0, 5.0, 5.0, 5.0 });
+            buttonElement.CornerRadius(CornerRadius{ 4.0, 4.0, 4.0, 4.0 });
         } catch (...) {}
         try {
             buttonElement.BackgroundSizing(winrt::Windows::UI::Xaml::Controls::BackgroundSizing::InnerBorderEdge);
         } catch (...) {}
+        
+        // Force CornerRadius on inner elements after loading
+        buttonElement.Loaded([](auto const& sender, auto const&) {
+            try {
+                auto btn = sender.template try_as<winrt::Windows::UI::Xaml::Controls::Button>();
+                if (!btn) return;
+                int count = winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetChildrenCount(btn);
+                if (count > 0) {
+                    auto child = winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetChild(btn, 0);
+                    // Usually it's a Grid or Border
+                    if (auto border = child.template try_as<winrt::Windows::UI::Xaml::Controls::Border>()) {
+                        border.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 4.0, 4.0, 4.0, 4.0 });
+                    }
+                    else if (auto grid = child.template try_as<winrt::Windows::UI::Xaml::Controls::Grid>()) {
+                        grid.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 4.0, 4.0, 4.0, 4.0 });
+                    }
+                }
+            } catch (...) {}
+        });
 
-        // Initialize custom Windows 11 taskbar button visuals
-        UpdateWeatherButtonVisuals(buttonElement, false, false, g_win11FlyoutIsOpen);
 
         // Scale padding by density setting
         double padLeftRight = (g_density == 2) ? 8.0 : ((g_density == 1) ? 10.0 : 12.0);
         double padTopBottom = (g_density == 2) ? 1.0 : ((g_density == 1) ? 1.5 : 2.0);
-        buttonElement.Padding(isHorizontal ? Thickness{ padLeftRight, padTopBottom, padLeftRight, padTopBottom } : Thickness{ 0, 3.0, 0, 3.0 });
+        
+        buttonElement.Padding(isHorizontal ? Thickness{ padLeftRight, padTopBottom, padLeftRight, padTopBottom } : Thickness{ 0.0, 2.0, 0.0, 2.0 });
         buttonElement.VerticalAlignment(VerticalAlignment::Stretch);
         buttonElement.HorizontalAlignment(HorizontalAlignment::Stretch);
 
         if (isHorizontal) {
-            buttonElement.Height(40.0);
+            if (std::isnan(buttonElement.Height()) || buttonElement.Height() != 40.0) buttonElement.Height(40.0);
         } else {
-            buttonElement.ClearValue(FrameworkElement::HeightProperty());
-            buttonElement.Width(40.0);
+            if (!std::isnan(buttonElement.Height())) buttonElement.Height(std::numeric_limits<double>::quiet_NaN());
+            if (!std::isnan(buttonElement.Width())) buttonElement.Width(std::numeric_limits<double>::quiet_NaN());
         }
                 
         StackPanel stackPanel;
+        stackPanel.IsHitTestVisible(false);
         stackPanel.Orientation(isHorizontal ? Orientation::Horizontal : Orientation::Vertical);
 
         // Scale stackPanel spacing by density
         double spacingVal = (g_density == 2) ? 6.0 : ((g_density == 1) ? 8.0 : 10.0);
-        stackPanel.Spacing(isHorizontal ? spacingVal : 1);
+        stackPanel.Spacing(isHorizontal ? spacingVal : 1.0);
         stackPanel.VerticalAlignment(VerticalAlignment::Center);
-        stackPanel.HorizontalAlignment(isHorizontal ? HorizontalAlignment::Left : HorizontalAlignment::Center);
-        if (!isHorizontal) {
-            stackPanel.MaxWidth(42.0);
-        }
+        stackPanel.HorizontalAlignment(HorizontalAlignment::Center);
 
         winrt::Windows::UI::Color xamlColor;
         xamlColor.A = 255;
@@ -2235,12 +2461,10 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
 
         double actualIconSize = (double)g_iconFontSize;
         if (!isHorizontal) {
-            
-            actualIconSize = (double)g_iconFontSize * 1.0;
+            actualIconSize = (double)g_iconFontSize * 0.9;
         }
 
         if (g_weatherStyle == 1) {  // Segoe PUA or Segoe MDL2 Assets
-            
             iconBlock.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(L"Segoe UI Symbol"));
             iconBlock.Glyph(icon);
             iconBlock.FontSize(actualIconSize);
@@ -2262,7 +2486,7 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         StackPanel textContainer;
         textContainer.Orientation(Orientation::Vertical);
         textContainer.VerticalAlignment(VerticalAlignment::Center);
-        textContainer.HorizontalAlignment(isHorizontal ? HorizontalAlignment::Left : HorizontalAlignment::Center);
+        textContainer.HorizontalAlignment(HorizontalAlignment::Center);
         textContainer.Spacing(0.0);
 
         TextBlock tempBlock;
@@ -2287,13 +2511,10 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         if (!isHorizontal) {
             tempBlock.HorizontalAlignment(HorizontalAlignment::Center);
             tempBlock.TextAlignment(winrt::Windows::UI::Xaml::TextAlignment::Center);
-            tempBlock.MaxWidth(40.0);
             tempBlock.Margin(Thickness(0,0,0,0));  
-            tempBlock.TextTrimming(TextTrimming::CharacterEllipsis);            
+            tempBlock.TextTrimming(TextTrimming::None);            
             condBlock.HorizontalAlignment(HorizontalAlignment::Center);
             condBlock.TextAlignment(winrt::Windows::UI::Xaml::TextAlignment::Center);
-            condBlock.MaxWidth(40.0);
-            condBlock.TextTrimming(TextTrimming::CharacterEllipsis);   
             condBlock.Margin(Thickness(0,0,0,0));
             iconBlock.Margin(Thickness(0,0,0,0));      
         }
@@ -2305,13 +2526,24 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         else {
             tempBlock.Text(L"Weather");            
             condBlock.Text(L"Loading...");         
-            
-            if (!isHorizontal) {
-                tempBlock.FontSize(g_line1FontSize * 0.75);
-                condBlock.FontSize(g_line2FontSize * 0.75) ;
-                iconBlock.FontSize(actualIconSize * 0.75);   
-                iconBlock.Margin(Thickness(-1,-2,1,2));             
-            }
+        }
+
+        if (!isHorizontal) {
+            tempBlock.FontSize(g_line1FontSize * 0.75);
+            condBlock.FontSize(g_line2FontSize * 0.80);
+            try {
+                if (g_weatherStyle == 1) {
+                    if (auto iconFI = stackPanel.Children().GetAt(0).try_as<winrt::Windows::UI::Xaml::Controls::FontIcon>()) {
+                        iconFI.FontSize(actualIconSize * 0.85);
+                        iconFI.Margin(Thickness{0, -2, 0, 0});
+                    }
+                } else {
+                    if (auto iconTB = stackPanel.Children().GetAt(0).try_as<winrt::Windows::UI::Xaml::Controls::TextBlock>()) {
+                        iconTB.FontSize(actualIconSize * 0.85);
+                        iconTB.Margin(Thickness{0, -2, 0, 0});
+                    }
+                }
+            } catch(...) {}
         }
 
         textContainer.Children().Append(tempBlock);
@@ -2323,11 +2555,7 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
         ToolTip toolTip;
         toolTip.Content(winrt::box_value(g_displayCity + L"\n" + condition + L", " + temp + L"\nClick for full forecast"));
 
-        Border btnBorder;
-        btnBorder.CornerRadius(CornerRadius{ 5.0, 5.0, 5.0, 5.0 });
-        btnBorder.Padding(Thickness{ 4.0, 2.0, 4.0, 2.0 });
-        btnBorder.Child(stackPanel);
-        buttonElement.Content(btnBorder);
+        buttonElement.Content(stackPanel);
 
         UpdateWeatherButtonVisuals(buttonElement, false, false, g_win11FlyoutIsOpen);
 
@@ -2396,7 +2624,7 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                     winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutShowOptions showOptions;
                     auto placement = winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Top;
                     float xOffset = 0.0f;
-                    float yOffset = -24.0f;
+                    float yOffset = 0.0f;
 
                     double contentWidth = stackPanel.ActualWidth();
                     if (contentWidth <= 0.0) {
@@ -2482,11 +2710,11 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                                 if (isHorizontal) {
                                     if (trayRect.top <= mi.rcMonitor.top + (mi.rcMonitor.bottom - mi.rcMonitor.top) / 2) {
                                         placement = winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Bottom;
-                                        yOffset = (float)contentHeight + 24.0f;
+                                        yOffset = (float)contentHeight + 2;
                                     }
                                     else {
                                         placement = winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Top;
-                                        yOffset = -24.0f;
+                                        yOffset = 2.0f;
                                     }
 
                                     // Horizontally center the flyout on the button, then constrain to screen bounds
@@ -2504,11 +2732,19 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                                 else {
                                     if (trayRect.left <= mi.rcMonitor.left + (mi.rcMonitor.right - mi.rcMonitor.left) / 2) {
                                         placement = winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Right;
-                                        xOffset = (float)contentWidth + 24.0f;
+                                        if (buttonScreenX > 0.0) {
+                                            xOffset = (float)((workLeft - buttonScreenX));
+                                        } else {
+                                            xOffset = (float)contentWidth;
+                                        }
                                     }
                                     else {
                                         placement = winrt::Windows::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Left;
-                                        xOffset = -24.0f;
+                                        if (buttonScreenX > 0.0) {
+                                            xOffset = (float)((workRight - buttonScreenX));
+                                        } else {
+                                            xOffset = 0.0f;
+                                        }
                                     }
 
                                     // Vertically center the flyout on the button, then constrain to screen bounds
@@ -2536,44 +2772,49 @@ void UpdateWeatherXamlElements(Grid weatherGrid,
                 }
             };
 
-            buttonElement.Tapped([showFlyoutLocal](auto const&, auto const& e) mutable {
-                try { e.Handled(true); } catch (...) {}
+            buttonElement.Click([showFlyoutLocal](auto const&, auto const&) mutable {
                 showFlyoutLocal();
             });
-            try {
-                buttonElement.Click([showFlyoutLocal](auto const&, auto const&) mutable {
-                    showFlyoutLocal();
-                });
-            } catch (...) {}
-
-            struct ButtonPointerState {
-                bool isHovered = false;
-                bool isPressed = false;
-            };
-            auto btnState = std::make_shared<ButtonPointerState>();
 
             try {
-                buttonElement.PointerEntered([buttonElement, btnState](auto const&, auto const&) {
-                    btnState->isHovered = true;
-                    UpdateWeatherButtonVisuals(buttonElement, btnState->isHovered, btnState->isPressed, g_win11FlyoutIsOpen);
+                buttonElement.PointerEntered([](auto const& sender, auto const&) {
+                    g_btnIsHovered = true;
+                    if (auto btn = sender.template try_as<winrt::Windows::UI::Xaml::Controls::Button>()) {
+                        UpdateWeatherButtonVisuals(btn, g_btnIsHovered, g_btnIsPressed, g_win11FlyoutIsOpen);
+                    }
                 });
-                buttonElement.PointerExited([buttonElement, btnState](auto const&, auto const&) {
-                    btnState->isHovered = false;
-                    UpdateWeatherButtonVisuals(buttonElement, btnState->isHovered, btnState->isPressed, g_win11FlyoutIsOpen);
+
+                buttonElement.PointerExited([](auto const& sender, auto const&) {
+                    g_btnIsHovered = false;
+                    if (auto btn = sender.template try_as<winrt::Windows::UI::Xaml::Controls::Button>()) {
+                        UpdateWeatherButtonVisuals(btn, g_btnIsHovered, g_btnIsPressed, g_win11FlyoutIsOpen);
+                    }
                 });
-                buttonElement.PointerPressed([buttonElement, btnState](auto const&, winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs const& e) {
-                    btnState->isPressed = true;
+
+                buttonElement.PointerPressed([](auto const& sender, winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+                    if (g_modUnloaded) return;
                     g_flyoutWasOpenOnPointerPressed = g_win11FlyoutIsOpen;
-                    UpdateWeatherButtonVisuals(buttonElement, btnState->isHovered, btnState->isPressed, g_win11FlyoutIsOpen);
-                    try { e.Handled(true); } catch (...) {}
+                    g_btnIsPressed = true;
+                    if (auto btn = sender.template try_as<winrt::Windows::UI::Xaml::Controls::Button>()) {
+                        UpdateWeatherButtonVisuals(btn, g_btnIsHovered, g_btnIsPressed, g_win11FlyoutIsOpen);
+                    }
                 });
-                buttonElement.PointerReleased([buttonElement, btnState](auto const&, winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs const& e) {
-                    btnState->isPressed = false;
-                    UpdateWeatherButtonVisuals(buttonElement, btnState->isHovered, btnState->isPressed, g_win11FlyoutIsOpen);
-                    try { e.Handled(true); } catch (...) {}
+
+                buttonElement.PointerReleased([](auto const& sender, auto const&) {
+                    g_btnIsPressed = false;
+                    if (auto btn = sender.template try_as<winrt::Windows::UI::Xaml::Controls::Button>()) {
+                        UpdateWeatherButtonVisuals(btn, g_btnIsHovered, g_btnIsPressed, g_win11FlyoutIsOpen);
+                    }
+                });
+
+                buttonElement.PointerCanceled([](auto const& sender, auto const&) {
+                    g_btnIsPressed = false;
+                    if (auto btn = sender.template try_as<winrt::Windows::UI::Xaml::Controls::Button>()) {
+                        UpdateWeatherButtonVisuals(btn, g_btnIsHovered, g_btnIsPressed, g_win11FlyoutIsOpen);
+                    }
                 });
             } catch (...) {}
-
+            
             g_showWin11Flyout = showFlyoutLocal;
 
             // Intercept pointer/click events on weatherGrid so they do not bubble up
@@ -3146,6 +3387,7 @@ void QueueWeatherUpdateOnUIThread() {
                 dispatcher.RunAsync(
                     winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                     [weakGrid, temp, icon, condition, acquired]() {
+                        if (g_modUnloaded) return;
                         try {
                             if (auto grid = weakGrid.get()) {
                                 UpdateWeatherXamlElements(grid, temp, icon, condition, acquired);
@@ -3965,7 +4207,8 @@ void InjectContentIntoGrid(FrameworkElement element,
     grid.Children().Append(weatherGrid);
 
     auto weakWeatherGrid = winrt::make_weak(weatherGrid);
-    element.SizeChanged([weakWeatherGrid](auto const&, auto const&) {
+    winrt::event_token token = element.SizeChanged([weakWeatherGrid](auto const&, auto const&) {
+        if (g_modUnloaded) return;
         if (auto wg = weakWeatherGrid.get()) {
             if (!wg.Parent()) return;
             try {
@@ -3974,6 +4217,7 @@ void InjectContentIntoGrid(FrameworkElement element,
                     dispatcher.RunAsync(
                         winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                         [weakWeatherGrid]() {
+                            if (g_modUnloaded) return;
                             try {
                                 if (auto wg2 = weakWeatherGrid.get()) {
                                     if (!wg2.Parent()) return;
@@ -3987,6 +4231,10 @@ void InjectContentIntoGrid(FrameworkElement element,
             catch (...) {}
         }
         });
+    {
+        std::lock_guard<std::mutex> lock2(g_hooksMutex);
+        g_sizeChangedHooks.push_back({winrt::make_weak(element), token});
+    }
 
     {
         std::lock_guard<std::mutex> lock(g_weatherGridMutex);
@@ -4055,6 +4303,8 @@ FrameworkElement FindElementInTree(FrameworkElement root, const std::wstring& ta
 }
 
 // Helper to find TaskListButtonPanel inside AugmentedEntryPoint
+
+
 FrameworkElement FindTaskListButtonPanel(FrameworkElement root) {
     return FindElementInTree(root, L"ExperienceToggleButtonRootPanel", L"TaskListButtonPanel");
 }
@@ -4064,18 +4314,11 @@ void ApplyTaskListButtonPanelHeight(FrameworkElement target, bool isHorizontalLo
     if (!target) return;
     if (!target.Parent()) return;
     try {
-        if (!isHorizontalLocal) {
-            double currentHeight = target.Height();
-            double currentMinHeight = target.MinHeight();
-            if (std::isnan(currentHeight) || currentHeight != 60.0) {
-                target.Height(60.0);
-            }
-            if (std::isnan(currentMinHeight) || currentMinHeight != 60.0) {
-                target.MinHeight(60.0);
-            }
-        } else {
-            target.ClearValue(FrameworkElement::HeightProperty());
-            target.ClearValue(FrameworkElement::MinHeightProperty());
+        if (!std::isnan(target.Height())) {
+            target.Height(std::numeric_limits<double>::quiet_NaN());
+        }
+        if (!std::isnan(target.MinHeight())) {
+            target.MinHeight(0.0);
         }
     } catch (...) {}
 }
@@ -4097,35 +4340,35 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                 if (auto ctrl = element.try_as<winrt::Windows::UI::Xaml::Controls::Control>()) {
                     ctrl.IsTabStop(false);
                     ctrl.AllowFocusOnInteraction(false);
+                    try {
+                        ctrl.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 5.0, 5.0, 5.0, 5.0 });
+                        ctrl.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));
+                    } catch (...) {}
                 }
                 winrt::Windows::UI::Xaml::Automation::AutomationProperties::SetAccessibilityView(element, winrt::Windows::UI::Xaml::Automation::Peers::AccessibilityView::Raw);
                 winrt::Windows::UI::Xaml::Automation::AutomationProperties::SetIsRequiredForForm(element, false);
             } catch (...) {}
 
-            if (!isHorizontal) {
-                try {
-                    element.Width(42.0);
-                    element.Height(60.0);
-                    element.MinHeight(60.0);
-                } catch (...) {}
-            } else {
-                try {
-                    element.ClearValue(FrameworkElement::WidthProperty());
-                    element.ClearValue(FrameworkElement::HeightProperty());
-                    element.ClearValue(FrameworkElement::MinHeightProperty());
-                } catch (...) {}
-            }
+            try {
+                if (!std::isnan(element.Width())) element.Width(std::numeric_limits<double>::quiet_NaN());
+                if (!std::isnan(element.Height())) element.Height(std::numeric_limits<double>::quiet_NaN());
+                if (!std::isnan(element.MinHeight())) element.MinHeight(0.0);
+            } catch (...) {}
 
             // Adjust TaskListButtonPanel height on vertical taskbars
             try {
                 if (auto target = FindTaskListButtonPanel(element)) {
                     ApplyTaskListButtonPanelHeight(target, isHorizontal);
 
-                    auto targetTag = target.Tag();
-                    if (!targetTag || winrt::unbox_value_or<winrt::hstring>(targetTag, L"") != L"SizeChangedHooked") {
-                        target.Tag(winrt::box_value(L"SizeChangedHooked"));
+                    void* targetPtr = winrt::get_abi(target);
+                    bool alreadyHooked = false;
+                    {
+                        std::lock_guard<std::mutex> lock(g_hookedMutex);
+                        alreadyHooked = !g_hookedElements.insert(targetPtr).second;
+                    }
+                    if (!alreadyHooked) {
                         auto weakTarget = winrt::make_weak(target);
-                        target.SizeChanged([weakTarget](auto const&, auto const&) {
+                        winrt::event_token token = target.SizeChanged([weakTarget](auto const&, auto const&) {
                             try {
                                 if (auto t = weakTarget.get()) {
                                     if (!t.Parent()) return;
@@ -4145,15 +4388,22 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                                 }
                             } catch (...) {}
                         });
+                        std::lock_guard<std::mutex> lock2(g_hooksMutex);
+                        g_sizeChangedHooks.push_back({weakTarget, token});
                     }
                 }
             } catch (...) {}
 
-            auto elementTag = element.Tag();
-            if (!elementTag || winrt::unbox_value_or<winrt::hstring>(elementTag, L"") != L"ElementSizeChangedHooked") {
-                element.Tag(winrt::box_value(L"ElementSizeChangedHooked"));
+            void* elementPtr = winrt::get_abi(element);
+            bool elementAlreadyHooked = false;
+            {
+                std::lock_guard<std::mutex> lock(g_hookedMutex);
+                elementAlreadyHooked = !g_hookedElements.insert(elementPtr).second;
+            }
+            if (!elementAlreadyHooked) {
                 auto weakElement = winrt::make_weak(element);
-                element.SizeChanged([weakElement](auto const&, auto const&) {
+                winrt::event_token token = element.SizeChanged([weakElement](auto const&, auto const&) {
+                    if (g_modUnloaded) return;
                     try {
                         if (auto el = weakElement.get()) {
                             if (!el.Parent()) return;
@@ -4162,6 +4412,7 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                                 dispatcher.RunAsync(
                                     winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                                     [weakElement]() {
+                                        if (g_modUnloaded) return;
                                         try {
                                             if (auto el2 = weakElement.get()) {
                                                 if (!el2.Parent()) return;
@@ -4190,6 +4441,10 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                     }
                     catch (...) {}
                 });
+                {
+                    std::lock_guard<std::mutex> lock2(g_hooksMutex);
+                    g_sizeChangedHooks.push_back({weakElement, token});
+                }
             }
         winrt::Windows::UI::Xaml::Controls::Panel innerPanel = element.try_as<winrt::Windows::UI::Xaml::Controls::Panel>();
 
@@ -4272,7 +4527,8 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                 innerPanel.Children().Append(weatherGrid);
 
                 auto weakWg = winrt::make_weak(weatherGrid);
-                element.SizeChanged([weakWg](auto const&, auto const&) {
+                winrt::event_token token = element.SizeChanged([weakWg](auto const&, auto const&) {
+                    if (g_modUnloaded) return;
                     if (auto wg = weakWg.get()) {
                         if (!wg.Parent()) return;
                         try {
@@ -4281,6 +4537,7 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                                 dispatcher.RunAsync(
                                     winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                                     [weakWg]() {
+                                        if (g_modUnloaded) return;
                                         try {
                                             if (auto wg2 = weakWg.get()) {
                                                 if (!wg2.Parent()) return;
@@ -4294,6 +4551,10 @@ bool FindAndInjectWidgetsButton(FrameworkElement element) {
                         catch (...) {}
                     }
                     });
+                {
+                    std::lock_guard<std::mutex> lock2(g_hooksMutex);
+                    g_sizeChangedHooks.push_back({winrt::make_weak(element), token});
+                }
                 {
                     std::lock_guard<std::mutex> lock(g_weatherGridMutex);
                     g_injectedWeatherGrid = winrt::make_weak(weatherGrid);
@@ -4376,6 +4637,7 @@ void ScheduleScanAsync(FrameworkElement startNode) {
         startNode.Dispatcher().RunAsync(
             winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [weak]() {
                 g_scanPending = false;
+                if (g_modUnloaded) return;
                 if (auto node = weak.get()) {
                     FrameworkElement current = node;
                     while (current) {
@@ -6208,6 +6470,7 @@ LRESULT CALLBACK ClockSubclassWndProc(HWND hWnd,
                         dispatcher.RunAsync(
                             winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                             [weakGrid]() {
+                                if (g_modUnloaded) return;
                                 try {
                                     if (auto grid = weakGrid.get()) {
                                         UpdateWeatherXamlElements(grid, g_cachedTemp, g_cachedIcon, g_cachedCondition, g_weatherAcquired);
@@ -6674,6 +6937,19 @@ BOOL CALLBACK CleanupXamlWindowsCallback(HWND hWnd, LPARAM lParam) {
 }
 
 void Wh_ModUninit() {
+    g_modUnloaded = true;
+
+    {
+        std::lock_guard<std::mutex> lock(g_hooksMutex);
+        for (auto& hook : g_sizeChangedHooks) {
+            try {
+                if (auto el = hook.weakElement.get()) {
+                    el.SizeChanged(hook.token);
+                }
+            } catch (...) {}
+        }
+        g_sizeChangedHooks.clear();
+    }
     if (!g_isShellProcess) {
         return;
     }
@@ -6699,10 +6975,10 @@ void Wh_ModUninit() {
     }
 
     // 1. Safely remove subclassing and restore layout
+    HWND hwndToClean = NULL;
     EnterCriticalSection(&g_subclassLock);
     if (g_hSubclassedWnd) {
-        g_modUnloaded = true;
-        HWND hwndToClean = g_hSubclassedWnd;
+        hwndToClean = g_hSubclassedWnd;
 
         if (g_hKeyboardHook) { UnhookWindowsHookEx(g_hKeyboardHook); g_hKeyboardHook = NULL; }
         if (g_hMouseHook) { UnhookWindowsHookEx(g_hMouseHook); g_hMouseHook = NULL; }
@@ -6745,8 +7021,8 @@ void Wh_ModUninit() {
     Sleep(50);
     UnregisterClassW(L"WhWin10ForecastPopupClass", GetModuleHandleW(NULL));
 
-    if (g_hSubclassedWnd && IsWindow(g_hSubclassedWnd)) {
-        SendMessageW(g_hSubclassedWnd, WM_USER + 4243, 0, 0);
+    if (hwndToClean && IsWindow(hwndToClean)) {
+        SendMessageW(hwndToClean, WM_USER + 4243, 0, 0);
     }
 
 
@@ -6759,23 +7035,30 @@ void Wh_ModUninit() {
     if (targetGrid) {
         try {
             auto dispatcher = targetGrid.Dispatcher();
-            if (dispatcher.HasThreadAccess()) {
-                if (auto parent = targetGrid.Parent().try_as<winrt::Windows::UI::Xaml::Controls::Panel>()) {
-                    RemoveInjectedFromPanel(parent);
+            if (dispatcher) {
+                if (dispatcher.HasThreadAccess()) {
+                    if (auto parent = targetGrid.Parent().try_as<winrt::Windows::UI::Xaml::Controls::Panel>()) {
+                        RemoveInjectedFromPanel(parent);
+                    }
                 }
-            }
-            else {
-                auto action = dispatcher.RunAsync(
-                    winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
-                    [targetGrid]() {
-                        try {
-                            if (auto parent = targetGrid.Parent().try_as<winrt::Windows::UI::Xaml::Controls::Panel>()) {
-                                RemoveInjectedFromPanel(parent);
-                            }
-                        }
-                        catch (...) {
-                        }
-                    });
+                else {
+                    HANDLE hDone = CreateEventW(NULL, FALSE, FALSE, NULL);
+                    if (hDone) {
+                        dispatcher.RunAsync(
+                            winrt::Windows::UI::Core::CoreDispatcherPriority::High,
+                            [targetGrid, hDone]() {
+                                try {
+                                    if (auto parent = targetGrid.Parent().try_as<winrt::Windows::UI::Xaml::Controls::Panel>()) {
+                                        RemoveInjectedFromPanel(parent);
+                                    }
+                                }
+                                catch (...) {}
+                                SetEvent(hDone);
+                            });
+                        WaitForSingleObject(hDone, 500);
+                        CloseHandle(hDone);
+                    }
+                }
             }
         }
         catch (...) {
@@ -6828,6 +7111,7 @@ void Wh_ModSettingsChanged() {
                     dispatcher.RunAsync(
                         winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
                         [targetElement, framesToRescan]() {
+                            if (g_modUnloaded) return;
                             try {
                                 if (auto parent = targetElement.Parent().try_as<winrt::Windows::UI::Xaml::Controls::Panel>()) {
                                     RemoveInjectedFromPanel(parent);
@@ -6852,6 +7136,7 @@ void Wh_ModSettingsChanged() {
                     auto disp = frame.Dispatcher();
                     if (disp) {
                         disp.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [frame]() {
+                            if (g_modUnloaded) return;
                             try { ScanAndInjectRecursive(frame); } catch (...) {}
                         });
                     }
