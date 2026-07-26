@@ -1,4 +1,3 @@
-#include <limits>
 // ==WindhawkMod==
 // @id              wh-weather
 // @name            Windhawk Weather
@@ -5912,7 +5911,7 @@ void ShowWin10ForecastPopupInternal(HWND hClock) {
 }
 
 void InvalidateClockParentRegion(HWND hWnd) {
-    // Improved parent-chain invalidation by bbmaster123 to perfectly clear visual remnants when resizing/shifting
+    // Improved parent-chain invalidation by clear visual remnants when resizing/shifting
     RECT rcWin;
     GetWindowRect(hWnd, &rcWin);
 
