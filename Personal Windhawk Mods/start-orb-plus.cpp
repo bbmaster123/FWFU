@@ -3,7 +3,7 @@
 // @name           Start Orb Plus
 // @description    Windows 7 style Start Orb overlay
 // @version        1.0.0
-// @author         Bbmaster123/Gemini
+// @author         Bbmaster123/AI
 // @include        explorer.exe
 // @architecture   x86-64
 // @compilerOptions -lgdiplus -lgdi32 -luser32 -ldwmapi -lcomctl32 -lole32 -loleaut32 -lruntimeobject
@@ -618,24 +618,9 @@ void LoadImages() {
 
     DownloadJob* job = new DownloadJob();
     job->jobId = currentJobId;
-
-    job->urlNormal = (pathNormal && pathNormal[0])
-                         ? pathNormal
-                         : L"https://raw.githubusercontent.com/ramensoftware/"
-                           L"windows-11-taskbar-styling-guide/refs/heads/main/"
-                           L"Themes/Windows7/ThemeResources/orbNormal.png";
-
-    job->urlHover = (pathHover && pathHover[0])
-                        ? pathHover
-                        : L"https://raw.githubusercontent.com/ramensoftware/"
-                          L"windows-11-taskbar-styling-guide/refs/heads/main/"
-                          L"Themes/Windows7/ThemeResources/orbHover.png";
-
-    job->urlPressed = (pathPressed && pathPressed[0])
-                          ? pathPressed
-                          : L"https://raw.githubusercontent.com/ramensoftware/"
-                            L"windows-11-taskbar-styling-guide/refs/heads/main/"
-                            L"Themes/Windows7/ThemeResources/orbPressed.png";
+    job->urlNormal = pathNormal ? pathNormal : L"";
+    job->urlHover = pathHover ? pathHover : L"";
+    job->urlPressed = pathPressed ? pathPressed : L"";
 
     Wh_FreeStringSetting(pathNormal);
     Wh_FreeStringSetting(pathHover);
@@ -916,9 +901,12 @@ void UpdateOrbDisplay(HWND hwnd) {
 
         Image* img = g_imgNormal;
 
-        if (g_state == 2 && g_imgPressed)
+        if (g_state == 2 && g_imgPressed){
             img = g_imgPressed;
-
+        }
+         if (g_state == 2 && !g_imgPressed){
+            img = g_imgHover;
+         }
         g.DrawImage(img, rect);
 
         if (g_imgHover && g_fadeAlpha > 0.001f && g_state != 2) {
@@ -972,13 +960,13 @@ DWORD WINAPI OrbThreadProc(LPVOID lpParam) {
     sizeY = g_settings.sizeY;
     LeaveCriticalSection(&g_cs);
 
-    // Wait up to 5 seconds for Shell_TrayWnd to be available
+    // Wait up to 1 seconds for Shell_TrayWnd to be available
     HWND hTask = NULL;
     for (int i = 0; i < 100; i++) {
         hTask = FindWindow(L"Shell_TrayWnd", NULL);
         if (hTask)
             break;
-        Sleep(50);
+        Sleep(10);
     }
 
     g_hOrbWnd =
@@ -1060,7 +1048,11 @@ LRESULT CALLBACK OrbWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     if (PtInRect(&rcOrb, pt)) {
                         hover = true;
                     }
-                }
+                }     
+                        if (IsStartMenuVisible()) {
+                        hover = true;
+                        }
+                  
 
                 // 2. Check if cursor is over the original start button
                 // (fallback)
