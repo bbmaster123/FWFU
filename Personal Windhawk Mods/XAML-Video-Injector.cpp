@@ -1,35 +1,33 @@
 // ==WindhawkMod==
 // @id              xaml-video-injector
 // @name            XAML-Video-Injector
-// @description     Injects a video player into taskbar, start button, start menu, and custom per-process XAML paths, as defined by the user.
-// @version         0.9
+// @description     Injects a video player into taskbar, start button, start menu, File Explorer tabs/command bar, and custom XAML/WinUI3 paths with hierarchical selector support.
+// @version         1.0.0
 // @author          bbmaster123 / Gemini
 // @include         explorer.exe
 // @include         StartMenuExperienceHost.exe
 // @include         SearchHost.exe
 // @include         SearchApp.exe
 // @architecture    x86-64
-// @compilerOptions -DWINVER=0x0A00 -ldwmapi -lole32 -loleaut32 -lruntimeobject -lshcore -lversion
+// @compilerOptions -DWINVER=0x0A00 -ladvapi32 -ldwmapi -lgdi32 -lole32 -loleaut32 -lruntimeobject -lshcore -lshell32 -lshlwapi -luuid -lversion
 // ==/WindhawkMod==
+
 // ==WindhawkModReadme==
 /*
-Injects Grid element with media player to defined XAML targets on a per element basis. Each target can have its own video, and settings. 
-Taskbar height setting is not intended for a final version of this mod, as its only being used currently as a work-around to get the mod to apply without needing to toggle it off/on. 
-May or may not conflict with taskbar height and icon size mod, which is where the taskbar height logic in this mod came from originally. Despite this, that bug was somehow reintroduced.
-It is the only known logic bug at the moment, but I've run out of time to fix it today. Shouldn't be too difficult to fix. 
-Lastly, corner radius setting not available for all injections yet, but is coming as it will be useful for certain situations.
+Injects Grid element with media player to defined XAML targets on a per element basis. Each target can have its own video and settings.
 
-- Supports injecting to any UWP app with XAML (no WinUI3 support for now)
-- Each target can have its own video with its own settings
-- looping, playback speed, opacity, and Z-Index (depth) options for each target
-- Supports custom user defined processes/xaml paths to inject into
-- Can inject into multiple processes (must add as inclusion in mod's advanced settings tab)
-- supports local filepath (eg. C:\users\admin\videos\test.mp4)
-- sets videos to mute by default
-- works with taskbar styler and other taskbar mods
-
+- Supports both UWP XAML (Windows.UI.Xaml) and WinUI 3 (Microsoft.UI.Xaml) applications
+- Supports hierarchical path targeting (e.g. "CommandBarControlRootGrid > Grid", "RootGrid > Grid", "> Grid")
+- Taskbar, Start Button, and Start Menu dedicated injection
+- File Explorer command bar & WinUI 3 custom injections
+- Looping, playback speed, opacity, corner radius, and Z-Index options for each target
+- Supports local filepaths (e.g. C:\videos\test.mp4) and web stream URLs
+- Mutes videos by default to prevent unwanted system audio
+- Performance timer pauses playback when windows are covered or minimized
+- Safe asynchronous lifecycle management to prevent host crashes on unload
 */
 // ==/WindhawkModReadme==
+
 // ==WindhawkModSettings==
 /*
 - loop: true
@@ -45,6 +43,8 @@ Lastly, corner radius setting not available for all injections yet, but is comin
   $name: "Taskbar: Opacity (0-100)"
 - taskbarZIndex: 1
   $name: "Taskbar: Z-Index"
+- taskbarCornerRadius: 0
+  $name: "Taskbar: Corner Radius"
 - TaskbarHeight: 48
   $name: "Taskbar: Reserved Height (0 for default)"
 
@@ -58,6 +58,8 @@ Lastly, corner radius setting not available for all injections yet, but is comin
   $name: "Start Button: Opacity (0-100)"
 - startButtonZIndex: 1
   $name: "Start Button: Z-Index"
+- startButtonCornerRadius: 0
+  $name: "Start Button: Corner Radius"
 
 - injectStartMenu: true
   $name: "Start Menu: Enable Injection"
@@ -69,14 +71,14 @@ Lastly, corner radius setting not available for all injections yet, but is comin
   $name: "Start Menu: Opacity (0-100)"
 - startMenuZIndex: -1
   $name: "Start Menu: Z-Index"
-- startMenuCornerRadius: 5
+- startMenuCornerRadius: 8
   $name: "Start Menu: Corner Radius"
 
 - customInjections:
   - - processName: "explorer.exe"
       $name: "Process Name (e.g. explorer.exe)"
-    - xamlPath: "RootGrid"
-      $name: "XAML Element Path (Name, e.g. RootGrid)"
+    - xamlPath: "FileExplorerExtensions.CommandBarControl > Grid"
+      $name: "XAML Element Path (e.g. RootGrid or FileExplorerExtensions.CommandBarControl > Grid)"
     - videoUrl: "https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4"
       $name: "Video URL"
     - rate: 100
@@ -88,46 +90,59 @@ Lastly, corner radius setting not available for all injections yet, but is comin
     - cornerRadius: 0
       $name: "Corner Radius"
   $name: "Custom Injections"
-  $description: "Add custom XAML injection points here. Note: You must also add the process name to the @include list in the mod metadata."
+  $description: "Add custom XAML / WinUI 3 injection points here. Supports hierarchical '>' (direct child) and space (descendant) syntax. Note: You must also add the process name to the @include list in mod settings."
 */
 // ==/WindhawkModSettings==
 
 #include <windhawk_utils.h>
 #include <roapi.h>
 #include <winstring.h>
+#include <Unknwn.h>
 #undef GetCurrentTime
 
+#include <winrt/base.h>
+#include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.UI.Core.h>
+#include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Media.Animation.h>
 #include <winrt/Windows.Media.Core.h>
 #include <winrt/Windows.Media.Playback.h>
-#include <winrt/base.h>
+
+#include <winrt/Microsoft.UI.h>
+#include <winrt/Microsoft.UI.Content.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
+#include <winrt/Microsoft.UI.Xaml.Documents.h>
+#include <winrt/Microsoft.UI.Xaml.Input.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Animation.h>
 
 #include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
-#include <functional>
 #include <algorithm>
-#include <memory>
 
+// UWP XAML Namespaces
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Controls;
 using namespace winrt::Windows::UI::Xaml::Media;
 
-// --- Helpers for Windhawk Settings ---
-template <auto fn>
-struct deleter_from_fn {
-    template <typename T>
-    constexpr void operator()(T* arg) const {
-        fn(arg);
-    }
-};
-using string_setting_unique_ptr =
-    std::unique_ptr<const WCHAR[], deleter_from_fn<Wh_FreeStringSetting>>;
+// WinUI 3 Namespaces
+namespace mud = winrt::Microsoft::UI::Dispatching;
+namespace mux = winrt::Microsoft::UI::Xaml;
+namespace muxc = winrt::Microsoft::UI::Xaml::Controls;
+namespace muxm = winrt::Microsoft::UI::Xaml::Media;
+namespace muxa = winrt::Microsoft::UI::Xaml::Media::Animation;
 
 // --- Constants ---
 constexpr std::wstring_view c_TargetGridName      = L"RootGrid";
@@ -140,34 +155,69 @@ constexpr std::wstring_view c_StartButtonName     = L"LaunchListButton";
 
 // --- Global State ---
 std::atomic<bool> g_taskbarViewDllLoaded = false;
-std::atomic<bool> g_injectedOnce{ false };
+std::atomic<bool> g_fileExplorerExtDllLoaded = false;
 std::atomic<bool> g_unloading{ false };
 std::atomic<bool> g_scanPending = false;
 std::atomic<bool> g_applyingSettings{ false };
 std::atomic<bool> g_pendingMeasureOverride{ false };
 std::atomic<int> g_hookCallCounter{ 0 };
+UINT_PTR g_perfTimerId = 0;
 
 // --- Start Menu Specific State ---
 bool g_applyPending = false;
 winrt::event_token g_layoutUpdatedToken{};
 winrt::event_token g_visibilityChangedToken{};
 
+// --- Tracking Structs ---
 struct TrackedGridRef {
     winrt::weak_ref<Controls::Grid> ref;
     winrt::weak_ref<winrt::Windows::Media::Playback::MediaPlayer> playerRef;
     std::wstring uniqueName;
 };
 
-struct InjectionSettings {
-    std::wstring videoUrl;
-    bool loop;
-    double rate;
-    double opacity;
-    int zIndex;
-    int cornerRadius;
+struct TrackedGridRefWinUI3 {
+    winrt::weak_ref<muxc::Grid> ref;
+    winrt::weak_ref<winrt::Windows::Media::Playback::MediaPlayer> playerRef;
+    std::wstring uniqueName;
 };
 
+struct XamlPathSegment {
+    std::wstring name;
+    bool directParent{ false };
+};
+
+struct InjectionSettings {
+    std::wstring videoUrl;
+    bool loop{ true };
+    double rate{ 1.0 };
+    double opacity{ 1.0 };
+    int zIndex{ 0 };
+    int cornerRadius{ 0 };
+};
+
+struct CustomInjectionConfig {
+    std::wstring processName;
+    std::wstring xamlPath;
+    std::vector<XamlPathSegment> parsedSegments;
+    std::wstring videoUrl;
+    double rate{ 1.0 };
+    double opacity{ 1.0 };
+    int zIndex{ 0 };
+    int cornerRadius{ 0 };
+};
+
+struct ModSettings {
+    std::mutex mutex;
+    bool loop{ true };
+    bool injectTaskbar{ true };
+    bool injectStartButton{ false };
+    bool injectStartMenu{ true };
+    int taskbarHeight{ 48 };
+    std::vector<CustomInjectionConfig> customInjections;
+} g_modSettings;
+
 std::vector<TrackedGridRef> g_trackedGrids;
+std::vector<TrackedGridRefWinUI3> g_trackedGridsWinUI3;
 std::mutex g_gridMutex;
 
 struct PendingHook {
@@ -182,6 +232,206 @@ std::mutex g_pendingMutex;
 int g_originalTaskbarHeight = 0;
 int g_taskbarHeight = 0;
 double* double_48_value_Original = nullptr;
+
+// Forward declarations
+void ScanWinUI3NodeRecursive(mux::DependencyObject const& node);
+void ScanXamlRootForCommandBars(mux::UIElement const& element);
+void ScheduleXamlRootScan(mux::UIElement const& element);
+void ScanCurrentThreadForCommandBars();
+void ScheduleCurrentThreadScan();
+std::vector<HWND> GetFileExplorerWnds();
+
+// --- Safe Settings Access Helpers ---
+std::wstring GetStringSettingSafe(PCWSTR pszKey, PCWSTR pszDefault = L"") {
+    PCWSTR raw = Wh_GetStringSetting(pszKey);
+    if (!raw) return pszDefault ? pszDefault : L"";
+    std::wstring result(raw);
+    Wh_FreeStringSetting(raw);
+    return result;
+}
+
+std::wstring GetStringSettingIndexedSafe(PCWSTR pszFormat, int index, PCWSTR pszDefault = L"") {
+    WCHAR key[128];
+    swprintf_s(key, ARRAYSIZE(key), pszFormat, index);
+    return GetStringSettingSafe(key, pszDefault);
+}
+
+std::wstring GetCurrentProcessBaseName() {
+    WCHAR processPath[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, processPath, MAX_PATH)) return L"";
+    std::wstring path = processPath;
+    size_t lastSlash = path.find_last_of(L"\\/");
+    if (lastSlash != std::wstring::npos) {
+        path = path.substr(lastSlash + 1);
+    }
+    std::transform(path.begin(), path.end(), path.begin(), ::towlower);
+    return path;
+}
+
+std::wstring NormalizeVideoUri(std::wstring url) {
+    url.erase(0, url.find_first_not_of(L" \t\r\n"));
+    url.erase(url.find_last_not_of(L" \t\r\n") + 1);
+    if (url.empty()) return L"";
+
+    if ((url.length() >= 2 && url[1] == L':') || url.find(L"\\\\") == 0) {
+        std::replace(url.begin(), url.end(), L'\\', L'/');
+        if (url.find(L"file:///") != 0 && url.find(L"file://") != 0) {
+            if (url.find(L"//") == 0) {
+                url = L"file:" + url;
+            } else {
+                url = L"file:///" + url;
+            }
+        }
+    }
+    return url;
+}
+
+// --- Hierarchical Path Selector Parser & Matcher ---
+std::vector<XamlPathSegment> ParseXamlPath(const std::wstring& path) {
+    std::vector<XamlPathSegment> segments;
+    size_t i = 0;
+    bool nextDirect = false;
+
+    while (i < path.size()) {
+        while (i < path.size() && (path[i] == L' ' || path[i] == L'\t' || path[i] == L'\r' || path[i] == L'\n')) {
+            i++;
+        }
+        if (i >= path.size()) break;
+
+        if (path[i] == L'>') {
+            nextDirect = true;
+            i++;
+            continue;
+        }
+
+        size_t start = i;
+        while (i < path.size() && path[i] != L'>' && path[i] != L' ' && path[i] != L'\t' && path[i] != L'\r' && path[i] != L'\n') {
+            i++;
+        }
+
+        std::wstring seg = path.substr(start, i - start);
+        std::transform(seg.begin(), seg.end(), seg.begin(), ::towlower);
+        if (!seg.empty()) {
+            segments.push_back({ seg, nextDirect });
+            nextDirect = false;
+        }
+    }
+    return segments;
+}
+
+bool MatchSingleElementUWP(winrt::Windows::UI::Xaml::DependencyObject const& obj, const std::wstring& seg) {
+    if (!obj) return false;
+    if (seg.empty() || seg == L"*") return true;
+
+    if (auto fe = obj.try_as<winrt::Windows::UI::Xaml::FrameworkElement>()) {
+        std::wstring name(fe.Name());
+        std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+        if (!name.empty() && name == seg) return true;
+    }
+
+    std::wstring className(winrt::get_class_name(obj));
+    std::transform(className.begin(), className.end(), className.begin(), ::towlower);
+
+    if (!className.empty()) {
+        if (className == seg) return true;
+        size_t dot = className.find_last_of(L'.');
+        if (dot != std::wstring::npos && className.substr(dot + 1) == seg) return true;
+        if (className.find(seg) != std::wstring::npos) return true;
+    }
+
+    return false;
+}
+
+bool MatchesXamlPathUWP(winrt::Windows::UI::Xaml::DependencyObject const& node, const std::vector<XamlPathSegment>& segments) {
+    if (!node || segments.empty()) return false;
+
+    int segIdx = (int)segments.size() - 1;
+    if (!MatchSingleElementUWP(node, segments[segIdx].name)) {
+        return false;
+    }
+
+    winrt::Windows::UI::Xaml::DependencyObject current = node;
+    while (segIdx > 0) {
+        bool direct = segments[segIdx].directParent;
+        segIdx--;
+
+        if (direct) {
+            current = winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(current);
+            if (!current || !MatchSingleElementUWP(current, segments[segIdx].name)) {
+                return false;
+            }
+        } else {
+            bool matchedAncestor = false;
+            while (current) {
+                current = winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(current);
+                if (current && MatchSingleElementUWP(current, segments[segIdx].name)) {
+                    matchedAncestor = true;
+                    break;
+                }
+            }
+            if (!matchedAncestor) return false;
+        }
+    }
+
+    return (segIdx == 0);
+}
+
+bool MatchSingleElementWinUI3(mux::DependencyObject const& obj, const std::wstring& seg) {
+    if (!obj) return false;
+    if (seg.empty() || seg == L"*") return true;
+
+    if (auto fe = obj.try_as<mux::FrameworkElement>()) {
+        std::wstring name(fe.Name());
+        std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+        if (!name.empty() && name == seg) return true;
+    }
+
+    std::wstring className(winrt::get_class_name(obj));
+    std::transform(className.begin(), className.end(), className.begin(), ::towlower);
+
+    if (!className.empty()) {
+        if (className == seg) return true;
+        size_t dot = className.find_last_of(L'.');
+        if (dot != std::wstring::npos && className.substr(dot + 1) == seg) return true;
+        if (className.find(seg) != std::wstring::npos) return true;
+    }
+
+    return false;
+}
+
+bool MatchesXamlPathWinUI3(mux::DependencyObject const& node, const std::vector<XamlPathSegment>& segments) {
+    if (!node || segments.empty()) return false;
+
+    int segIdx = (int)segments.size() - 1;
+    if (!MatchSingleElementWinUI3(node, segments[segIdx].name)) {
+        return false;
+    }
+
+    mux::DependencyObject current = node;
+    while (segIdx > 0) {
+        bool direct = segments[segIdx].directParent;
+        segIdx--;
+
+        if (direct) {
+            current = muxm::VisualTreeHelper::GetParent(current);
+            if (!current || !MatchSingleElementWinUI3(current, segments[segIdx].name)) {
+                return false;
+            }
+        } else {
+            bool matchedAncestor = false;
+            while (current) {
+                current = muxm::VisualTreeHelper::GetParent(current);
+                if (current && MatchSingleElementWinUI3(current, segments[segIdx].name)) {
+                    matchedAncestor = true;
+                    break;
+                }
+            }
+            if (!matchedAncestor) return false;
+        }
+    }
+
+    return (segIdx == 0);
+}
 
 // --- Function Pointers ---
 using TrayUI__StuckTrayChange_t = void(WINAPI*)(void*);
@@ -207,7 +457,19 @@ RoGetActivationFactory_t RoGetActivationFactory_Original;
 
 void* TaskbarController_OnGroupingModeChanged_Original = nullptr;
 
-// --- Helpers ---
+// --- WinUI 3 FileExplorerExtensions Function Pointers ---
+using CommandBarManager_CommandBar_t = void(WINAPI*)(void*, void*);
+CommandBarManager_CommandBar_t CommandBarManager_CommandBar_Original;
+
+using CommandBarControl_OnApplyTemplate_t = void(WINAPI*)(void*);
+CommandBarControl_OnApplyTemplate_t CommandBarControl_OnApplyTemplate_Original;
+CommandBarControl_OnApplyTemplate_t CommandBarControl_Wave1_OnApplyTemplate_Original;
+
+using CommandBarControl_GotFocus_t = void(WINAPI*)(void*, void*, void*);
+CommandBarControl_GotFocus_t CommandBarControl_GotFocus_Original;
+CommandBarControl_GotFocus_t CommandBarControl_Wave1_GotFocus_Original;
+
+// --- Settings Resolver ---
 InjectionSettings GetSettingsForTarget(std::wstring_view uniqueName) {
     InjectionSettings s;
     s.loop = Wh_GetIntSetting(L"loop") != 0;
@@ -218,41 +480,72 @@ InjectionSettings GetSettingsForTarget(std::wstring_view uniqueName) {
     else if (uniqueName == L"StartMenuVideoGrid") prefix = L"startMenu";
 
     if (!prefix.empty()) {
-        s.videoUrl = Wh_GetStringSetting((prefix + L"VideoUrl").c_str());
-        if (s.videoUrl.empty()) s.videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4";
-        if (s.videoUrl.find(L":\\") != std::wstring::npos) s.videoUrl = L"file:///" + s.videoUrl;
+        s.videoUrl = GetStringSettingSafe((prefix + L"VideoUrl").c_str(), L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4");
+        s.videoUrl = NormalizeVideoUri(s.videoUrl);
 
         s.rate = static_cast<double>(Wh_GetIntSetting((prefix + L"Rate").c_str())) / 100.0;
         if (s.rate <= 0.0) s.rate = 1.0;
 
         s.opacity = static_cast<double>(Wh_GetIntSetting((prefix + L"Opacity").c_str())) / 100.0;
         s.zIndex = Wh_GetIntSetting((prefix + L"ZIndex").c_str());
-        
-        if (uniqueName == L"StartMenuVideoGrid") {
-            s.cornerRadius = Wh_GetIntSetting(L"startMenuCornerRadius");
-        } else {
-            s.cornerRadius = 0;
-        }
+        s.cornerRadius = Wh_GetIntSetting((prefix + L"CornerRadius").c_str());
     } else if (std::wstring_view(uniqueName).find(L"CustomVideoGrid_") == 0) {
-        int index = std::stoi(std::wstring(uniqueName.substr(16)));
+        int index = 0;
+        try {
+            index = std::stoi(std::wstring(uniqueName.substr(16)));
+        } catch (...) { index = 0; }
         
-        s.videoUrl = Wh_GetStringSetting(L"customInjections[%d].videoUrl", index);
-        if (s.videoUrl.empty()) s.videoUrl = L"https://cdn.pixabay.com/video/2025/12/21/323513_tiny.mp4";
-        if (s.videoUrl.find(L":\\") != std::wstring::npos) s.videoUrl = L"file:///" + s.videoUrl;
-
-        s.rate = static_cast<double>(Wh_GetIntSetting(L"customInjections[%d].rate", index)) / 100.0;
-        if (s.rate <= 0.0) s.rate = 1.0;
-
-        s.opacity = static_cast<double>(Wh_GetIntSetting(L"customInjections[%d].opacity", index)) / 100.0;
-        s.zIndex = Wh_GetIntSetting(L"customInjections[%d].zIndex", index);
-        s.cornerRadius = Wh_GetIntSetting(L"customInjections[%d].cornerRadius", index);
+        std::lock_guard<std::mutex> lock(g_modSettings.mutex);
+        if (index >= 0 && index < (int)g_modSettings.customInjections.size()) {
+            auto const& ci = g_modSettings.customInjections[index];
+            s.videoUrl = ci.videoUrl;
+            s.rate = ci.rate;
+            s.opacity = ci.opacity;
+            s.zIndex = ci.zIndex;
+            s.cornerRadius = ci.cornerRadius;
+        }
     }
     
     return s;
 }
 
 void LoadSettings() {
-    g_taskbarHeight = Wh_GetIntSetting(L"TaskbarHeight");
+    std::lock_guard<std::mutex> lock(g_modSettings.mutex);
+    g_modSettings.loop = Wh_GetIntSetting(L"loop") != 0;
+    g_modSettings.injectTaskbar = Wh_GetIntSetting(L"injectTaskbar") != 0;
+    g_modSettings.injectStartButton = Wh_GetIntSetting(L"injectStartButton") != 0;
+    g_modSettings.injectStartMenu = Wh_GetIntSetting(L"injectStartMenu") != 0;
+    g_modSettings.taskbarHeight = Wh_GetIntSetting(L"TaskbarHeight");
+    g_taskbarHeight = g_modSettings.taskbarHeight;
+
+    g_modSettings.customInjections.clear();
+    for (int i = 0;; i++) {
+        std::wstring proc = GetStringSettingIndexedSafe(L"customInjections[%d].processName", i);
+        if (proc.empty()) break;
+        std::transform(proc.begin(), proc.end(), proc.begin(), ::towlower);
+
+        std::wstring xamlPath = GetStringSettingIndexedSafe(L"customInjections[%d].xamlPath", i);
+        std::wstring videoUrl = GetStringSettingIndexedSafe(L"customInjections[%d].videoUrl", i);
+        videoUrl = NormalizeVideoUri(videoUrl);
+
+        WCHAR key[128];
+        swprintf_s(key, ARRAYSIZE(key), L"customInjections[%d].rate", i);
+        int rateVal = Wh_GetIntSetting(key);
+        double rate = (rateVal > 0) ? ((double)rateVal / 100.0) : 1.0;
+
+        swprintf_s(key, ARRAYSIZE(key), L"customInjections[%d].opacity", i);
+        int opVal = Wh_GetIntSetting(key);
+        double opacity = (opVal >= 0) ? ((double)opVal / 100.0) : 1.0;
+
+        swprintf_s(key, ARRAYSIZE(key), L"customInjections[%d].zIndex", i);
+        int zIndex = Wh_GetIntSetting(key);
+
+        swprintf_s(key, ARRAYSIZE(key), L"customInjections[%d].cornerRadius", i);
+        int cornerRadius = Wh_GetIntSetting(key);
+
+        auto segments = ParseXamlPath(xamlPath);
+        g_modSettings.customInjections.push_back({ proc, xamlPath, segments, videoUrl, rate, opacity, zIndex, cornerRadius });
+    }
 }
 
 HWND FindCurrentProcessTaskbarWnd() {
@@ -274,6 +567,22 @@ HWND FindCurrentProcessTaskbarWnd() {
     return hTaskbarWnd;
 }
 
+void NotifyAllTaskbarWindows(UINT msg, WPARAM wParam, LPARAM lParam) {
+    EnumWindows(
+        [](HWND hWnd, LPARAM lp) -> BOOL {
+            DWORD dwProcessId;
+            WCHAR className[32];
+            if (GetWindowThreadProcessId(hWnd, &dwProcessId) &&
+                dwProcessId == GetCurrentProcessId() &&
+                GetClassName(hWnd, className, ARRAYSIZE(className)) &&
+                (_wcsicmp(className, L"Shell_TrayWnd") == 0 || _wcsicmp(className, L"Shell_SecondaryTrayWnd") == 0)) {
+                SendMessage(hWnd, (UINT)lp, 0, 0);
+            }
+            return TRUE;
+        },
+        (LPARAM)msg);
+}
+
 FrameworkElement GetFrameworkElementFromNative(void* pThis) {
     try {
         void* iUnknownPtr = (void**)pThis + 3;
@@ -291,6 +600,25 @@ bool ProtectAndMemcpy(DWORD protect, void* dst, const void* src, size_t size) {
     return true;
 }
 
+// --- UWP Video Operations ---
+void CleanupVideoContainer(FrameworkElement const& container) {
+    try {
+        if (auto grid = container.try_as<Grid>()) {
+            for (auto child : grid.Children()) {
+                if (auto mpe = child.try_as<MediaPlayerElement>()) {
+                    if (auto player = mpe.MediaPlayer()) {
+                        try {
+                            player.Pause();
+                            player.Source(nullptr);
+                        } catch (...) {}
+                        mpe.SetMediaPlayer(nullptr);
+                    }
+                }
+            }
+        }
+    } catch (...) {}
+}
+
 void RemoveInjectedFromGrid(Grid grid) {
     if (!grid) return;
     try {
@@ -299,7 +627,8 @@ void RemoveInjectedFromGrid(Grid grid) {
             if (auto fe = children.GetAt(i).try_as<FrameworkElement>()) {
                 std::wstring name(fe.Name());
                 if (name == c_InjectedControlName || name == L"StartButtonVideoGrid" || 
-                    name == L"StartMenuVideoGrid" || name.find(L"CustomVideoGrid_") == 0) {
+                    name == L"StartMenuVideoGrid" || name.rfind(L"CustomVideoGrid_", 0) == 0) {
+                    CleanupVideoContainer(fe);
                     children.RemoveAt(i);
                 }
             }
@@ -307,99 +636,136 @@ void RemoveInjectedFromGrid(Grid grid) {
     } catch (...) {}
 }
 
-// --- Video Core ---
 void CreateAndInjectVideo(Grid targetGrid, std::wstring_view uniqueName) {
+    if (!targetGrid || g_unloading) return;
+
     InjectionSettings s = GetSettingsForTarget(uniqueName);
+    if (s.videoUrl.empty()) return;
 
-    Grid videoContainer;
-    videoContainer.Name(uniqueName);
-    videoContainer.HorizontalAlignment(HorizontalAlignment::Stretch);
-    videoContainer.VerticalAlignment(VerticalAlignment::Stretch);
-    videoContainer.Opacity(0); // Start invisible for fade-in
-    Canvas::SetZIndex(videoContainer, s.zIndex);
+    try {
+        winrt::Windows::Foundation::Uri videoUri{ nullptr };
+        try {
+            videoUri = winrt::Windows::Foundation::Uri(s.videoUrl);
+        } catch (...) {
+            return;
+        }
 
-    // Apply Corner Radius
-    if (s.cornerRadius > 0) {
-        videoContainer.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ (double)s.cornerRadius, (double)s.cornerRadius, (double)s.cornerRadius, (double)s.cornerRadius });
-    }
+        Grid videoContainer;
+        videoContainer.Name(uniqueName);
+        videoContainer.HorizontalAlignment(HorizontalAlignment::Stretch);
+        videoContainer.VerticalAlignment(VerticalAlignment::Stretch);
+        videoContainer.Opacity(0);
+        Canvas::SetZIndex(videoContainer, s.zIndex);
+        Controls::Grid::SetColumn(videoContainer, 0);
+        Controls::Grid::SetColumnSpan(videoContainer, 100);
+        Controls::Grid::SetRow(videoContainer, 0);
+        Controls::Grid::SetRowSpan(videoContainer, 100);
 
-    winrt::Windows::Media::Playback::MediaPlayer mediaPlayer;
-    mediaPlayer.Source(winrt::Windows::Media::Core::MediaSource::CreateFromUri(winrt::Windows::Foundation::Uri(s.videoUrl)));
-    mediaPlayer.IsLoopingEnabled(s.loop);
-    mediaPlayer.IsMuted(true);
-    mediaPlayer.PlaybackRate(s.rate);
+        if (s.cornerRadius > 0) {
+            videoContainer.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 
+                (double)s.cornerRadius, (double)s.cornerRadius, (double)s.cornerRadius, (double)s.cornerRadius 
+            });
+        }
 
-    MediaPlayerElement player;
-    player.SetMediaPlayer(mediaPlayer);
-    player.Stretch(Stretch::UniformToFill);
-    player.IsHitTestVisible(false);
+        winrt::Windows::Media::Playback::MediaPlayer mediaPlayer;
+        mediaPlayer.Source(winrt::Windows::Media::Core::MediaSource::CreateFromUri(videoUri));
+        mediaPlayer.CommandManager().IsEnabled(false);
+        mediaPlayer.IsLoopingEnabled(s.loop);
+        mediaPlayer.IsMuted(true);
+        mediaPlayer.PlaybackRate(s.rate);
 
-    videoContainer.Children().Append(player);
-    
-    // For Start Menu, we often want it at the back (index 0)
-    if (uniqueName == L"StartMenuVideoGrid" || uniqueName == L"CustomVideoGrid") {
-        targetGrid.Children().InsertAt(0, videoContainer);
-    } else {
-        targetGrid.Children().Append(videoContainer);
-    }
-    
-    // --- Fade-in Animation ---
-    using namespace winrt::Windows::UI::Xaml::Media::Animation;
-    DoubleAnimation fadeIn;
-    fadeIn.Duration(winrt::Windows::UI::Xaml::Duration{ winrt::Windows::Foundation::TimeSpan{ std::chrono::milliseconds(314) } });
-    fadeIn.From(0.0);
-    fadeIn.To(s.opacity);
-    
-    Storyboard storyboard;
-    storyboard.Children().Append(fadeIn);
-    Storyboard::SetTarget(fadeIn, videoContainer);
-    Storyboard::SetTargetProperty(fadeIn, L"Opacity");
-    storyboard.Begin();
+        MediaPlayerElement player;
+        player.SetMediaPlayer(mediaPlayer);
+        player.Stretch(Stretch::UniformToFill);
+        player.IsHitTestVisible(false);
+        try {
+            player.CacheMode(winrt::Windows::UI::Xaml::Media::BitmapCache{});
+        } catch (...) {}
 
-    mediaPlayer.Play();
+        videoContainer.Children().Append(player);
+        
+        if (uniqueName == L"StartMenuVideoGrid" || uniqueName.rfind(L"CustomVideoGrid_", 0) == 0) {
+            targetGrid.Children().InsertAt(0, videoContainer);
+        } else {
+            targetGrid.Children().Append(videoContainer);
+        }
+        
+        using namespace winrt::Windows::UI::Xaml::Media::Animation;
+        DoubleAnimation fadeIn;
+        fadeIn.Duration(winrt::Windows::UI::Xaml::Duration{ winrt::Windows::Foundation::TimeSpan{ std::chrono::milliseconds(314) } });
+        fadeIn.From(0.0);
+        fadeIn.To(s.opacity);
+        
+        Storyboard storyboard;
+        storyboard.Children().Append(fadeIn);
+        Storyboard::SetTarget(fadeIn, videoContainer);
+        Storyboard::SetTargetProperty(fadeIn, L"Opacity");
+        storyboard.Begin();
 
-    // Store references for tracking/performance
-    {
-        std::lock_guard<std::mutex> lock(g_gridMutex);
-        bool found = false;
-        for (auto& t : g_trackedGrids) {
-            if (auto g = t.ref.get()) {
-                if (winrt::get_abi(g) == winrt::get_abi(targetGrid)) {
-                    t.playerRef = winrt::make_weak(mediaPlayer);
-                    found = true;
-                    break;
+        mediaPlayer.Play();
+
+        {
+            std::lock_guard<std::mutex> lock(g_gridMutex);
+            bool found = false;
+            for (auto& t : g_trackedGrids) {
+                if (auto g = t.ref.get()) {
+                    if (winrt::get_abi(g) == winrt::get_abi(targetGrid)) {
+                        t.playerRef = winrt::make_weak(mediaPlayer);
+                        t.uniqueName = std::wstring(uniqueName);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                g_trackedGrids.push_back({ winrt::make_weak(targetGrid), winrt::make_weak(mediaPlayer), std::wstring(uniqueName) });
+            }
+        }
+
+        if (uniqueName != L"StartMenuVideoGrid" && uniqueName.rfind(L"CustomVideoGrid_", 0) != 0) {
+            int count = VisualTreeHelper::GetChildrenCount(targetGrid);
+            for (int i = 0; i < count; i++) {
+                if (auto child = VisualTreeHelper::GetChild(targetGrid, i).try_as<FrameworkElement>()) {
+                    if (winrt::get_class_name(child) == c_ItemsRepeater) {
+                        Canvas::SetZIndex(child, s.zIndex + 1);
+                    }
                 }
             }
         }
-        if (!found) {
-            g_trackedGrids.push_back({ winrt::make_weak(targetGrid), winrt::make_weak(mediaPlayer), std::wstring(uniqueName) });
-        }
-    }
+    } catch (...) {}
+}
 
-    // Ensure icons stay above (for Taskbar)
-    if (uniqueName != L"StartMenuVideoGrid" && uniqueName != L"CustomVideoGrid") {
-        int count = VisualTreeHelper::GetChildrenCount(targetGrid);
-        for (int i = 0; i < count; i++) {
-            if (auto child = VisualTreeHelper::GetChild(targetGrid, i).try_as<FrameworkElement>()) {
-                if (winrt::get_class_name(child) == c_ItemsRepeater) {
-                    Canvas::SetZIndex(child, s.zIndex + 1);
-                }
-            }
-        }
+FrameworkElement FindFirstGridInElement(FrameworkElement root) {
+    if (!root) return nullptr;
+    if (auto grid = root.try_as<Grid>()) return grid;
+    int count = VisualTreeHelper::GetChildrenCount(root);
+    for (int i = 0; i < count; i++) {
+        auto child = VisualTreeHelper::GetChild(root, i).try_as<FrameworkElement>();
+        if (!child) continue;
+        if (auto grid = child.try_as<Grid>()) return grid;
+        if (auto nested = FindFirstGridInElement(child)) return nested;
     }
+    return nullptr;
 }
 
 void InjectContentIntoGrid(FrameworkElement element, std::wstring_view uniqueName) {
-    auto grid = element.try_as<Grid>();
+    if (!element || g_unloading) return;
+    auto grid = element.try_as<Grid>() ? element.as<Grid>() : FindFirstGridInElement(element).try_as<Grid>();
     if (!grid) return;
 
-    RemoveInjectedFromGrid(grid);
+    try {
+        for (auto child : grid.Children()) {
+            if (auto fe = child.try_as<FrameworkElement>()) {
+                if (fe.Name() == uniqueName) return;
+            }
+        }
+    } catch (...) {}
 
     bool enabled = false;
     if (uniqueName == c_InjectedControlName) enabled = Wh_GetIntSetting(L"injectTaskbar") != 0;
     else if (uniqueName == L"StartButtonVideoGrid") enabled = Wh_GetIntSetting(L"injectStartButton") != 0;
     else if (uniqueName == L"StartMenuVideoGrid") enabled = Wh_GetIntSetting(L"injectStartMenu") != 0;
-    else if (std::wstring_view(uniqueName).find(L"CustomVideoGrid_") == 0) enabled = true; // Custom injections are enabled if they are in the list
+    else if (std::wstring_view(uniqueName).find(L"CustomVideoGrid_") == 0) enabled = true;
 
     if (!enabled) return;
 
@@ -411,23 +777,217 @@ void InjectContentIntoGrid(FrameworkElement element, std::wstring_view uniqueNam
     auto weakGrid = winrt::make_weak(grid);
     std::wstring name(uniqueName);
     element.SizeChanged([weakGrid, name](auto const&, auto const&) {
+        if (g_unloading) return;
         if (auto g = weakGrid.get()) {
             if (g.ActualWidth() > 0 && g.ActualHeight() > 0) {
-                // Check if already injected to avoid duplicates
-                auto children = g.Children();
-                bool alreadyInjected = false;
-                for (uint32_t i = 0; i < children.Size(); ++i) {
-                    if (auto fe = children.GetAt(i).try_as<FrameworkElement>()) {
-                        if (fe.Name() == name) {
-                            alreadyInjected = true;
-                            break;
+                try {
+                    for (auto child : g.Children()) {
+                        if (auto fe = child.try_as<FrameworkElement>()) {
+                            if (fe.Name() == name) return;
                         }
                     }
-                }
-                if (!alreadyInjected) CreateAndInjectVideo(g, name);
+                } catch (...) {}
+                CreateAndInjectVideo(g, name);
             }
         }
     });
+}
+
+// --- WinUI 3 Video Operations ---
+muxc::Grid FindFirstGridInElementWinUI3(mux::DependencyObject const& root) {
+    if (!root) return nullptr;
+    if (auto grid = root.try_as<muxc::Grid>()) return grid;
+    int count = muxm::VisualTreeHelper::GetChildrenCount(root);
+    for (int i = 0; i < count; i++) {
+        auto child = muxm::VisualTreeHelper::GetChild(root, i);
+        if (auto grid = child.try_as<muxc::Grid>()) return grid;
+        if (auto nested = FindFirstGridInElementWinUI3(child)) return nested;
+    }
+    return nullptr;
+}
+
+void RemoveInjectedFromGridWinUI3(muxc::Grid grid) {
+    if (!grid) return;
+    try {
+        auto children = grid.Children();
+        for (int i = (int)children.Size() - 1; i >= 0; i--) {
+            if (auto fe = children.GetAt(i).try_as<mux::FrameworkElement>()) {
+                std::wstring name(fe.Name());
+                if (name == L"ExplorerVideoBackgroundGrid" || name.rfind(L"CustomVideoGrid_", 0) == 0) {
+                    if (auto container = fe.try_as<muxc::Grid>()) {
+                        for (auto child : container.Children()) {
+                            if (auto mpe = child.try_as<muxc::MediaPlayerElement>()) {
+                                if (auto player = mpe.MediaPlayer()) {
+                                    try {
+                                        player.Pause();
+                                        player.Source(nullptr);
+                                    } catch (...) {}
+                                    mpe.SetMediaPlayer(nullptr);
+                                }
+                            }
+                        }
+                    }
+                    children.RemoveAt(i);
+                }
+            }
+        }
+    } catch (...) {}
+}
+
+void CreateAndInjectVideoWinUI3(muxc::Grid targetGrid, std::wstring_view uniqueName) {
+    if (!targetGrid || g_unloading) return;
+
+    try {
+        for (auto child : targetGrid.Children()) {
+            if (auto fe = child.try_as<mux::FrameworkElement>()) {
+                if (fe.Name() == uniqueName) return;
+            }
+        }
+    } catch (...) {}
+
+    InjectionSettings s = GetSettingsForTarget(uniqueName);
+    if (s.videoUrl.empty()) return;
+
+    try {
+        winrt::Windows::Foundation::Uri videoUri{ nullptr };
+        try {
+            videoUri = winrt::Windows::Foundation::Uri(s.videoUrl);
+        } catch (...) { return; }
+
+        muxc::Grid videoContainer;
+        videoContainer.Name(uniqueName);
+        videoContainer.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+        videoContainer.VerticalAlignment(mux::VerticalAlignment::Stretch);
+        videoContainer.Opacity(0);
+        muxc::Canvas::SetZIndex(videoContainer, s.zIndex);
+        muxc::Grid::SetColumn(videoContainer, 0);
+        muxc::Grid::SetColumnSpan(videoContainer, 100);
+        muxc::Grid::SetRow(videoContainer, 0);
+        muxc::Grid::SetRowSpan(videoContainer, 100);
+
+        if (s.cornerRadius > 0) {
+            videoContainer.CornerRadius(mux::CornerRadius{ 
+                (double)s.cornerRadius, (double)s.cornerRadius, (double)s.cornerRadius, (double)s.cornerRadius 
+            });
+        }
+
+        winrt::Windows::Media::Playback::MediaPlayer mediaPlayer;
+        mediaPlayer.Source(winrt::Windows::Media::Core::MediaSource::CreateFromUri(videoUri));
+        mediaPlayer.CommandManager().IsEnabled(false);
+        mediaPlayer.IsLoopingEnabled(s.loop);
+        mediaPlayer.IsMuted(true);
+        mediaPlayer.PlaybackRate(s.rate);
+
+        muxc::MediaPlayerElement player;
+        player.SetMediaPlayer(mediaPlayer);
+        player.Stretch(muxm::Stretch::UniformToFill);
+        player.IsHitTestVisible(false);
+
+        videoContainer.Children().Append(player);
+        targetGrid.Children().InsertAt(0, videoContainer);
+
+        muxa::DoubleAnimation fadeIn;
+        fadeIn.Duration(mux::Duration{ winrt::Windows::Foundation::TimeSpan{ std::chrono::milliseconds(314) } });
+        fadeIn.From(0.0);
+        fadeIn.To(s.opacity);
+
+        muxa::Storyboard storyboard;
+        storyboard.Children().Append(fadeIn);
+        muxa::Storyboard::SetTarget(fadeIn, videoContainer);
+        muxa::Storyboard::SetTargetProperty(fadeIn, L"Opacity");
+        storyboard.Begin();
+
+        mediaPlayer.Play();
+
+        {
+            std::lock_guard<std::mutex> lock(g_gridMutex);
+            bool found = false;
+            for (auto& t : g_trackedGridsWinUI3) {
+                if (auto g = t.ref.get()) {
+                    if (winrt::get_abi(g) == winrt::get_abi(targetGrid)) {
+                        t.playerRef = winrt::make_weak(mediaPlayer);
+                        t.uniqueName = std::wstring(uniqueName);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                g_trackedGridsWinUI3.push_back({ winrt::make_weak(targetGrid), winrt::make_weak(mediaPlayer), std::wstring(uniqueName) });
+            }
+        }
+    } catch (...) {}
+}
+
+void InjectContentIntoGridWinUI3(mux::FrameworkElement element, std::wstring_view uniqueName) {
+    if (!element || g_unloading) return;
+    auto grid = element.try_as<muxc::Grid>() ? element.as<muxc::Grid>() : FindFirstGridInElementWinUI3(element);
+    if (!grid) return;
+
+    try {
+        for (auto child : grid.Children()) {
+            if (auto fe = child.try_as<mux::FrameworkElement>()) {
+                if (fe.Name() == uniqueName) return;
+            }
+        }
+    } catch (...) {}
+
+    if (element.ActualWidth() > 0 && element.ActualHeight() > 0) {
+        CreateAndInjectVideoWinUI3(grid, uniqueName);
+        return;
+    }
+
+    auto weakGrid = winrt::make_weak(grid);
+    std::wstring name(uniqueName);
+    element.SizeChanged([weakGrid, name](auto const&, auto const&) {
+        if (g_unloading) return;
+        if (auto g = weakGrid.get()) {
+            if (g.ActualWidth() > 0 && g.ActualHeight() > 0) {
+                try {
+                    for (auto child : g.Children()) {
+                        if (auto fe = child.try_as<mux::FrameworkElement>()) {
+                            if (fe.Name() == name) return;
+                        }
+                    }
+                } catch (...) {}
+                CreateAndInjectVideoWinUI3(g, name);
+            }
+        }
+    });
+}
+
+void ScanWinUI3NodeRecursive(mux::DependencyObject const& node) {
+    if (!node || g_unloading) return;
+
+    if (auto fe = node.try_as<mux::FrameworkElement>()) {
+        std::wstring currentProc = GetCurrentProcessBaseName();
+        std::vector<size_t> matchIndices;
+        {
+            std::lock_guard<std::mutex> lock(g_modSettings.mutex);
+            for (size_t i = 0; i < g_modSettings.customInjections.size(); i++) {
+                auto const& ci = g_modSettings.customInjections[i];
+                if (currentProc == ci.processName || ci.processName.empty() || ci.processName == L"*") {
+                    if (!ci.parsedSegments.empty()) {
+                        if (MatchesXamlPathWinUI3(fe, ci.parsedSegments)) {
+                            matchIndices.push_back(i);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (size_t idx : matchIndices) {
+            InjectContentIntoGridWinUI3(fe, L"CustomVideoGrid_" + std::to_wstring(idx));
+        }
+    }
+
+    int count = muxm::VisualTreeHelper::GetChildrenCount(node);
+    for (int i = 0; i < count; i++) {
+        auto child = muxm::VisualTreeHelper::GetChild(node, i);
+        if (child) {
+            ScanWinUI3NodeRecursive(child);
+        }
+    }
 }
 
 // Walk down from TaskbarFrame to Start button (ExperienceToggleButton#LaunchListButton)
@@ -443,42 +1003,32 @@ FrameworkElement FindStartButtonInFrame(FrameworkElement frameElem) {
     return nullptr;
 }
 
-// Find first Grid inside an element (for Start button template)
-FrameworkElement FindFirstGridInElement(FrameworkElement root) {
-    if (!root) return nullptr;
-    if (auto grid = root.try_as<Grid>()) return grid;
-    int count = VisualTreeHelper::GetChildrenCount(root);
-    for (int i = 0; i < count; i++) {
-        auto child = VisualTreeHelper::GetChild(root, i).try_as<FrameworkElement>();
-        if (!child) continue;
-        if (auto grid = child.try_as<Grid>()) return grid;
-        if (auto nested = FindFirstGridInElement(child)) return nested;
-    }
-    return nullptr;
-}
-
 void ScanAndInjectRecursive(FrameworkElement element) {
-    if (!element) return;
+    if (!element || g_unloading) return;
     
     std::wstring name(element.Name());
     if (Wh_GetIntSetting(L"injectTaskbar") && name == c_TargetGridName) {
         InjectContentIntoGrid(element, c_InjectedControlName);
-        return;
     }
 
-    int customCount = 0;
-    while (true) {
-        string_setting_unique_ptr proc(Wh_GetStringSetting(L"customInjections[%d].processName", customCount));
-        if (!proc || !*proc.get()) break;
-        customCount++;
-    }
-
-    for (int i = 0; i < customCount; i++) {
-        string_setting_unique_ptr target(Wh_GetStringSetting(L"customInjections[%d].xamlPath", i));
-        if (target && *target.get() && name == target.get()) {
-            InjectContentIntoGrid(element, L"CustomVideoGrid_" + std::to_wstring(i));
-            return;
+    std::wstring currentProc = GetCurrentProcessBaseName();
+    std::vector<size_t> matchIndices;
+    {
+        std::lock_guard<std::mutex> lock(g_modSettings.mutex);
+        for (size_t i = 0; i < g_modSettings.customInjections.size(); i++) {
+            auto const& ci = g_modSettings.customInjections[i];
+            if (currentProc == ci.processName || ci.processName.empty() || ci.processName == L"*") {
+                if (!ci.parsedSegments.empty()) {
+                    if (MatchesXamlPathUWP(element, ci.parsedSegments)) {
+                        matchIndices.push_back(i);
+                    }
+                }
+            }
         }
+    }
+
+    for (size_t idx : matchIndices) {
+        InjectContentIntoGrid(element, L"CustomVideoGrid_" + std::to_wstring(idx));
     }
 
     int count = VisualTreeHelper::GetChildrenCount(element);
@@ -489,13 +1039,13 @@ void ScanAndInjectRecursive(FrameworkElement element) {
 }
 
 void ScheduleScanAsync(FrameworkElement startNode) {
-    if (!startNode || g_scanPending.exchange(true)) return;
+    if (!startNode || g_unloading || g_scanPending.exchange(true)) return;
     auto weak = winrt::make_weak(startNode);
     try {
         startNode.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [weak]() {
             g_scanPending = false;
+            if (g_unloading) return;
             if (auto node = weak.get()) {
-                // Robust injection: walk up to the frame first to ensure we scan the whole taskbar
                 FrameworkElement current = node;
                 while (current) {
                     if (winrt::get_class_name(current) == c_RootFrameName) {
@@ -515,10 +1065,8 @@ void ScheduleScanAsync(FrameworkElement startNode) {
                             g_scannedFrames.push_back(winrt::make_weak(current));
                         }
                         
-                        // Taskbar Background
                         ScanAndInjectRecursive(current);
 
-                        // Start Button
                         if (Wh_GetIntSetting(L"injectStartButton")) {
                             if (auto startBtn = FindStartButtonInFrame(current)) {
                                 if (auto grid = FindFirstGridInElement(startBtn)) {
@@ -531,7 +1079,6 @@ void ScheduleScanAsync(FrameworkElement startNode) {
                     auto parent = VisualTreeHelper::GetParent(current);
                     current = parent ? parent.try_as<FrameworkElement>() : nullptr;
                 }
-                // Fallback: scan from node
                 ScanAndInjectRecursive(node);
             }
         });
@@ -564,8 +1111,10 @@ int WINAPI TaskbarFrame_MeasureOverride_Hook(void* pThis, winrt::Windows::Founda
     g_hookCallCounter++;
     int ret = TaskbarFrame_MeasureOverride_Original(pThis, size, resultSize);
     g_pendingMeasureOverride = false;
-    if (auto elem = GetFrameworkElementFromNative(pThis)) {
-        ScheduleScanAsync(elem);
+    if (!g_unloading) {
+        if (auto elem = GetFrameworkElementFromNative(pThis)) {
+            ScheduleScanAsync(elem);
+        }
     }
     g_hookCallCounter--;
     return ret;
@@ -598,7 +1147,6 @@ void ApplySettings(int taskbarHeight) {
         return;
     }
 
-    // If 0, we don't override, but we still want to refresh the UI to trigger injection
     int targetHeight = taskbarHeight;
     if (targetHeight <= 0) {
         RECT rect{};
@@ -612,26 +1160,24 @@ void ApplySettings(int taskbarHeight) {
 
     g_applyingSettings = true;
     
-    // Force refresh by toggling height
     g_pendingMeasureOverride = true;
     g_taskbarHeight = targetHeight - 1;
     if (double_48_value_Original) {
         double val = (double)g_taskbarHeight;
         ProtectAndMemcpy(PAGE_READWRITE, double_48_value_Original, &val, sizeof(double));
     }
-    SendMessage(hTaskbarWnd, WM_SETTINGCHANGE, SPI_SETLOGICALDPIOVERRIDE, 0);
+    NotifyAllTaskbarWindows(WM_SETTINGCHANGE, SPI_SETLOGICALDPIOVERRIDE, 0);
     for (int i = 0; i < 100 && g_pendingMeasureOverride; i++) Sleep(100);
 
     g_pendingMeasureOverride = true;
-    g_taskbarHeight = taskbarHeight; // Set to actual setting (can be 0)
+    g_taskbarHeight = taskbarHeight;
     
-    // If we are overriding with a specific height, update the constant
     if (double_48_value_Original) {
         double val = (taskbarHeight > 0) ? (double)taskbarHeight : (double)targetHeight;
         ProtectAndMemcpy(PAGE_READWRITE, double_48_value_Original, &val, sizeof(double));
     }
 
-    SendMessage(hTaskbarWnd, WM_SETTINGCHANGE, SPI_SETLOGICALDPIOVERRIDE, 0);
+    NotifyAllTaskbarWindows(WM_SETTINGCHANGE, SPI_SETLOGICALDPIOVERRIDE, 0);
     for (int i = 0; i < 100 && g_pendingMeasureOverride; i++) Sleep(100);
 
     HWND hReBar = FindWindowEx(hTaskbarWnd, nullptr, L"ReBarWindow32", nullptr);
@@ -648,11 +1194,8 @@ void CALLBACK PerformanceTimerProc(HWND, UINT, UINT_PTR, DWORD) {
 
     bool isCovered = false;
     HWND hForeground = GetForegroundWindow();
-    if (hForeground) {
-        // Simple check: is the foreground window maximized?
-        if (IsZoomed(hForeground)) {
-            isCovered = true;
-        }
+    if (hForeground && IsZoomed(hForeground)) {
+        isCovered = true;
     }
 
     HWND hLock = FindWindowW(L"LockScreenClass", nullptr);
@@ -660,41 +1203,69 @@ void CALLBACK PerformanceTimerProc(HWND, UINT, UINT_PTR, DWORD) {
         isCovered = true;
     }
 
-    std::lock_guard<std::mutex> lock(g_gridMutex);
-    for (auto& t : g_trackedGrids) {
-        if (auto grid = t.ref.get()) {
-            if (auto player = t.playerRef.get()) {
-                std::wstring uName = t.uniqueName;
-                grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [grid, player, isCovered, uName]() {
+    // Update UWP media players
+    {
+        std::lock_guard<std::mutex> lock(g_gridMutex);
+        for (auto& t : g_trackedGrids) {
+            if (auto grid = t.ref.get()) {
+                if (auto player = t.playerRef.get()) {
+                    std::wstring uName = t.uniqueName;
                     try {
-                        bool pauseThis = isCovered;
-                        if (uName == L"StartMenuVideoGrid") {
-                            if (grid.Visibility() != Visibility::Visible) {
-                                pauseThis = true;
-                            } else {
-                                HWND hStart = FindWindowW(L"XYWidgetHostWindow", nullptr);
-                                if (!hStart) hStart = FindWindowW(L"Windows.UI.Core.CoreWindow", L"Start");
-                                if (hStart && !IsWindowVisible(hStart)) {
-                                    pauseThis = true;
+                        grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [grid, player, isCovered, uName]() {
+                            if (g_unloading) return;
+                            try {
+                                bool pauseThis = isCovered;
+                                if (uName == L"StartMenuVideoGrid") {
+                                    if (grid.Visibility() != Visibility::Visible) {
+                                        pauseThis = true;
+                                    } else {
+                                        HWND hStart = FindWindowW(L"XYWidgetHostWindow", nullptr);
+                                        if (!hStart) hStart = FindWindowW(L"Windows.UI.Core.CoreWindow", L"Start");
+                                        if (hStart && !IsWindowVisible(hStart)) {
+                                            pauseThis = true;
+                                        }
+                                    }
                                 }
-                            }
-                        }
 
-                        auto state = player.PlaybackSession().PlaybackState();
-                        if (pauseThis) {
-                            if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Playing) player.Pause();
-                        } else {
-                            if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Paused) player.Play();
-                        }
+                                auto state = player.PlaybackSession().PlaybackState();
+                                if (pauseThis) {
+                                    if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Playing) player.Pause();
+                                } else {
+                                    if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Paused) player.Play();
+                                }
+                            } catch (...) {}
+                        });
                     } catch (...) {}
-                });
+                }
+            }
+        }
+
+        // Update WinUI 3 media players
+        for (auto& t : g_trackedGridsWinUI3) {
+            if (auto grid = t.ref.get()) {
+                if (auto player = t.playerRef.get()) {
+                    try {
+                        grid.DispatcherQueue().TryEnqueue(mud::DispatcherQueuePriority::Low, [player, isCovered]() {
+                            if (g_unloading) return;
+                            try {
+                                auto state = player.PlaybackSession().PlaybackState();
+                                if (isCovered) {
+                                    if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Playing) player.Pause();
+                                } else {
+                                    if (state == winrt::Windows::Media::Playback::MediaPlaybackState::Paused) player.Play();
+                                }
+                            } catch (...) {}
+                        });
+                    } catch (...) {}
+                }
             }
         }
     }
 }
 
-// --- Start Menu Specific Logic ---
-FrameworkElement FindChildRecursive(DependencyObject parent, std::function<bool(FrameworkElement)> predicate) {
+// --- Start Menu & Custom UWP Logic ---
+template <typename Predicate>
+FrameworkElement FindChildRecursive(DependencyObject parent, Predicate&& predicate) {
     if (!parent) return nullptr;
     int count = VisualTreeHelper::GetChildrenCount(parent);
     for (int i = 0; i < count; i++) {
@@ -708,12 +1279,9 @@ FrameworkElement FindChildRecursive(DependencyObject parent, std::function<bool(
 }
 
 void InjectStartMenuVideo() {
-    if (!Wh_GetIntSetting(L"injectStartMenu")) return;
+    if (!Wh_GetIntSetting(L"injectStartMenu") || g_unloading) return;
 
-    WCHAR processName[MAX_PATH];
-    GetModuleFileName(nullptr, processName, MAX_PATH);
-    std::wstring proc(processName);
-    std::transform(proc.begin(), proc.end(), proc.begin(), ::towlower);
+    std::wstring proc = GetCurrentProcessBaseName();
     if (proc.find(L"searchhost.exe") != std::wstring::npos || proc.find(L"searchapp.exe") != std::wstring::npos) {
         return;
     }
@@ -723,8 +1291,9 @@ void InjectStartMenuVideo() {
     auto content = window.Content();
     if (!content) return;
 
-    auto target = FindChildRecursive(content, [](FrameworkElement fe) {
-        return fe.Name() == L"MainMenu" || fe.Name() == L"RootGrid";
+    auto target = FindChildRecursive(content, [](FrameworkElement const& fe) {
+        std::wstring name(fe.Name());
+        return name == L"MainMenu" || name == L"RootGrid" || name == L"Root" || name == L"StartMenuRoot" || name == L"FrameGrid";
     }).try_as<Grid>();
 
     if (target) {
@@ -733,43 +1302,43 @@ void InjectStartMenuVideo() {
 }
 
 void InjectCustomVideo() {
-    int customCount = 0;
-    while (true) {
-        string_setting_unique_ptr proc(Wh_GetStringSetting(L"customInjections[%d].processName", customCount));
-        if (!proc || !*proc.get()) break;
-        customCount++;
-    }
-    if (customCount <= 0) return;
-
+    if (g_unloading) return;
     auto window = Window::Current();
     if (!window) return;
     auto content = window.Content();
     if (!content) return;
 
-    for (int i = 0; i < customCount; i++) {
-        string_setting_unique_ptr targetName(Wh_GetStringSetting(L"customInjections[%d].xamlPath", i));
-        if (!targetName || !*targetName.get()) continue;
+    std::wstring currentProc = GetCurrentProcessBaseName();
 
-        std::wstring targetNameStr(targetName.get());
-        auto target = FindChildRecursive(content, [targetNameStr](FrameworkElement const& fe) {
-            return std::wstring_view(fe.Name()) == targetNameStr;
-        }).try_as<Grid>();
+    std::lock_guard<std::mutex> lock(g_modSettings.mutex);
+    for (size_t i = 0; i < g_modSettings.customInjections.size(); i++) {
+        auto const& ci = g_modSettings.customInjections[i];
+        std::wstring ciProc = ci.processName;
+        std::transform(ciProc.begin(), ciProc.end(), ciProc.begin(), ::towlower);
 
-        if (target) {
-            InjectContentIntoGrid(target, L"CustomVideoGrid_" + std::to_wstring(i));
+        if (currentProc == ciProc || ciProc.empty() || ciProc == L"*") {
+            if (ci.parsedSegments.empty()) continue;
+
+            auto target = FindChildRecursive(content, [&ci](FrameworkElement const& fe) {
+                return MatchesXamlPathUWP(fe, ci.parsedSegments);
+            }).try_as<Grid>();
+
+            if (target) {
+                InjectContentIntoGrid(target, L"CustomVideoGrid_" + std::to_wstring(i));
+            }
         }
     }
 }
 
 void StartMenuInit() {
-    if (g_layoutUpdatedToken) return;
+    if (g_layoutUpdatedToken || g_unloading) return;
 
     auto window = Window::Current();
     if (!window) return;
 
     if (!g_visibilityChangedToken) {
         g_visibilityChangedToken = window.VisibilityChanged([](auto const&, winrt::Windows::UI::Core::VisibilityChangedEventArgs const& args) {
-            if (args.Visible()) {
+            if (args.Visible() && !g_unloading) {
                 g_applyPending = true;
             }
         });
@@ -778,7 +1347,7 @@ void StartMenuInit() {
     if (auto contentUI = window.Content()) {
         auto content = contentUI.as<FrameworkElement>();
         g_layoutUpdatedToken = content.LayoutUpdated([](auto const&, auto const&) {
-            if (g_applyPending) {
+            if (g_applyPending && !g_unloading) {
                 g_applyPending = false;
                 InjectStartMenuVideo();
                 InjectCustomVideo();
@@ -792,16 +1361,16 @@ void StartMenuInit() {
 
 using RunFromWindowThreadProc_t = void(WINAPI*)(PVOID parameter);
 bool RunFromWindowThread(HWND hWnd, RunFromWindowThreadProc_t proc, PVOID procParam) {
-    static const UINT runMsg = RegisterWindowMessage(L"WH_RunThread_" WH_MOD_ID);
+    static const UINT runMsg = RegisterWindowMessageW(L"WH_RunThread_XamlVideoInjector");
     DWORD tid = GetWindowThreadProcessId(hWnd, nullptr);
     if (tid == GetCurrentThreadId()) { proc(procParam); return true; }
 
-    HHOOK hook = SetWindowsHookEx(WH_CALLWNDPROC, [](int n, WPARAM w, LPARAM l) -> LRESULT {
+    HHOOK hook = SetWindowsHookExW(WH_CALLWNDPROC, [](int n, WPARAM w, LPARAM l) -> LRESULT {
         if (n == HC_ACTION) {
             auto cwp = (CWPSTRUCT*)l;
-            if (cwp->message == RegisterWindowMessage(L"WH_RunThread_" WH_MOD_ID)) {
+            if (cwp->message == RegisterWindowMessageW(L"WH_RunThread_XamlVideoInjector")) {
                 struct P { RunFromWindowThreadProc_t p; PVOID pp; } *m = (P*)cwp->lParam;
-                m->p(m->pp);
+                if (m && m->p) m->p(m->pp);
             }
         }
         return CallNextHookEx(nullptr, n, w, l);
@@ -826,9 +1395,15 @@ HWND GetCoreWnd() {
 }
 
 HRESULT WINAPI RoGetActivationFactory_Hook(HSTRING cls, REFIID iid, void** f) {
-    if (wcscmp(WindowsGetStringRawBuffer(cls, nullptr), L"Windows.UI.Xaml.Hosting.XamlIsland") == 0) {
-        HWND h = GetCoreWnd();
-        if (h) RunFromWindowThread(h, [](PVOID) { StartMenuInit(); }, nullptr);
+    if (cls) {
+        PCWSTR raw = WindowsGetStringRawBuffer(cls, nullptr);
+        if (raw) {
+            if (wcscmp(raw, L"Windows.UI.Xaml.Hosting.XamlIsland") == 0 ||
+                wcscmp(raw, L"Windows.UI.Xaml.Application") == 0) {
+                HWND h = GetCoreWnd();
+                if (h) RunFromWindowThread(h, [](PVOID) { StartMenuInit(); }, nullptr);
+            }
+        }
     }
     return RoGetActivationFactory_Original(cls, iid, f);
 }
@@ -840,18 +1415,141 @@ double WINAPI TaskbarConfiguration_GetFrameSize_Hook(int enumTaskbarSize) {
 }
 
 void WINAPI TaskListButton_UpdateVisualStates_Hook(void* pThis) {
+    g_hookCallCounter++;
     TaskListButton_UpdateVisualStates_Original(pThis);
-    if (auto elem = GetFrameworkElementFromNative(pThis)) ScheduleScanAsync(elem);
+    if (!g_unloading) {
+        if (auto elem = GetFrameworkElementFromNative(pThis)) ScheduleScanAsync(elem);
+    }
+    g_hookCallCounter--;
 }
 
 using SHAppBarMessage_t = decltype(&SHAppBarMessage);
 SHAppBarMessage_t SHAppBarMessage_Original;
 UINT_PTR WINAPI SHAppBarMessage_Hook(DWORD dwMessage, PAPPBARDATA pData) {
     auto ret = SHAppBarMessage_Original(dwMessage, pData);
-    if (dwMessage == ABM_QUERYPOS && ret && g_taskbarHeight > 0) {
+    if (dwMessage == ABM_QUERYPOS && ret && g_taskbarHeight > 0 && pData) {
         pData->rc.top = pData->rc.bottom - MulDiv(g_taskbarHeight, GetDpiForWindow(pData->hWnd), 96);
     }
     return ret;
+}
+
+// --- WinUI 3 File Explorer Scanning & Scheduling Helpers ---
+void ScanXamlRootForCommandBars(mux::UIElement const& element) {
+    if (g_unloading || !element) return;
+    try {
+        auto xamlRoot = element.XamlRoot();
+        if (!xamlRoot) return;
+        auto content = xamlRoot.Content();
+        if (!content) return;
+        ScanWinUI3NodeRecursive(content);
+    } catch (...) {}
+}
+
+void ScheduleXamlRootScan(mux::UIElement const& element) {
+    if (g_unloading || !element) return;
+    try {
+        auto dispatcherQueue = mud::DispatcherQueue::GetForCurrentThread();
+        if (!dispatcherQueue) {
+            ScanXamlRootForCommandBars(element);
+            return;
+        }
+        dispatcherQueue.TryEnqueue([weakElement = winrt::make_weak(element)]() {
+            if (auto el = weakElement.get()) {
+                ScanXamlRootForCommandBars(el);
+            }
+        });
+    } catch (...) {}
+}
+
+void ScanCurrentThreadForCommandBars() {
+    if (g_unloading) return;
+    try {
+        auto focused = mux::Input::FocusManager::GetFocusedElement();
+        auto element = focused ? focused.try_as<mux::UIElement>() : nullptr;
+        if (element) {
+            ScanXamlRootForCommandBars(element);
+        }
+    } catch (...) {}
+}
+
+void ScheduleCurrentThreadScan() {
+    if (g_unloading) return;
+    try {
+        auto dispatcherQueue = mud::DispatcherQueue::GetForCurrentThread();
+        if (!dispatcherQueue) {
+            ScanCurrentThreadForCommandBars();
+            return;
+        }
+        dispatcherQueue.TryEnqueue([]() {
+            ScanCurrentThreadForCommandBars();
+        });
+    } catch (...) {}
+}
+
+std::vector<HWND> GetFileExplorerWnds() {
+    std::vector<HWND> hWnds;
+    EnumWindows(
+        [](HWND hWnd, LPARAM lParam) -> BOOL {
+            auto& hWnds = *(std::vector<HWND>*)lParam;
+
+            DWORD dwProcessId = 0;
+            if (!GetWindowThreadProcessId(hWnd, &dwProcessId) ||
+                dwProcessId != GetCurrentProcessId()) {
+                return TRUE;
+            }
+
+            WCHAR className[64];
+            if (GetClassName(hWnd, className, ARRAYSIZE(className)) &&
+                _wcsicmp(className, L"CabinetWClass") == 0) {
+                hWnds.push_back(hWnd);
+            }
+
+            return TRUE;
+        },
+        (LPARAM)&hWnds);
+
+    return hWnds;
+}
+
+// --- WinUI 3 Hooks (FileExplorerExtensions) ---
+void WINAPI CommandBarManager_CommandBar_Hook(void* pThis, void* commandBar) {
+    CommandBarManager_CommandBar_Original(pThis, commandBar);
+    if (g_unloading || !commandBar) return;
+    try {
+        auto const& element = *reinterpret_cast<muxc::CommandBar const*>(commandBar);
+        if (!element) return;
+        ScheduleXamlRootScan(element);
+    } catch (...) {}
+}
+
+void WINAPI CommandBarControl_OnApplyTemplate_Hook(void* pThis) {
+    CommandBarControl_OnApplyTemplate_Original(pThis);
+    ScheduleCurrentThreadScan();
+}
+
+void WINAPI CommandBarControl_Wave1_OnApplyTemplate_Hook(void* pThis) {
+    CommandBarControl_Wave1_OnApplyTemplate_Original(pThis);
+    ScheduleCurrentThreadScan();
+}
+
+void HandleCommandBarControlGotFocus(void* sender) {
+    if (g_unloading || !sender) return;
+    try {
+        auto const& inspectable = *reinterpret_cast<winrt::Windows::Foundation::IInspectable const*>(sender);
+        if (auto element = inspectable ? inspectable.try_as<mux::UIElement>() : nullptr) {
+            ScanXamlRootForCommandBars(element);
+        }
+    } catch (...) {}
+}
+
+void WINAPI CommandBarControl_GotFocus_Hook(void* pThis, void* sender, void* args) {
+    CommandBarControl_GotFocus_Original(pThis, sender, args);
+    HandleCommandBarControlGotFocus(sender);
+}
+
+void WINAPI CommandBarControl_Wave1_GotFocus_Hook(void* pThis, void* sender, void* args) {
+    CommandBarControl_Wave1_GotFocus_Original(pThis, sender, args);
+    HandleCommandBarControlGotFocus(sender);
 }
 
 bool HookTaskbarViewDllSymbols(HMODULE module) {
@@ -862,6 +1560,57 @@ bool HookTaskbarViewDllSymbols(HMODULE module) {
         { {LR"(public: void __cdecl winrt::Taskbar::implementation::TaskbarController::UpdateFrameHeight(void))"}, (void**)&TaskbarController_UpdateFrameHeight_Original, (void*)TaskbarController_UpdateFrameHeight_Hook, true },
         { {LR"(public: void __cdecl winrt::Taskbar::implementation::TaskbarController::OnGroupingModeChanged(void))"}, &TaskbarController_OnGroupingModeChanged_Original, nullptr, true },
         { {LR"(public: virtual int __cdecl winrt::impl::produce<struct winrt::Taskbar::implementation::TaskbarFrame,struct winrt::Windows::UI::Xaml::IFrameworkElementOverrides>::MeasureOverride(struct winrt::Windows::Foundation::Size,struct winrt::Windows::Foundation::Size *))"}, (void**)&TaskbarFrame_MeasureOverride_Original, (void*)TaskbarFrame_MeasureOverride_Hook }
+    };
+    return HookSymbols(module, symbolHooks, ARRAYSIZE(symbolHooks));
+}
+
+bool HookFileExplorerExtensionsDllSymbols(HMODULE module) {
+    WindhawkUtils::SYMBOL_HOOK symbolHooks[] = {
+        {
+            {
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarManager::CommandBar(struct winrt::Microsoft::UI::Xaml::Controls::CommandBar const &))",
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarManager::CommandBar(struct winrt::Microsoft::UI::Xaml::Controls::CommandBar const & __ptr64) __ptr64)",
+            },
+            (void**)&CommandBarManager_CommandBar_Original,
+            (void*)CommandBarManager_CommandBar_Hook,
+            true,
+        },
+        {
+            {
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl::OnApplyTemplate(void))",
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl::OnApplyTemplate(void) __ptr64)",
+            },
+            (void**)&CommandBarControl_OnApplyTemplate_Original,
+            (void*)CommandBarControl_OnApplyTemplate_Hook,
+            true,
+        },
+        {
+            {
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl_Wave1::OnApplyTemplate(void))",
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl_Wave1::OnApplyTemplate(void) __ptr64)",
+            },
+            (void**)&CommandBarControl_Wave1_OnApplyTemplate_Original,
+            (void*)CommandBarControl_Wave1_OnApplyTemplate_Hook,
+            true,
+        },
+        {
+            {
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl::CommandBarControlGotFocusHandler(struct winrt::Windows::Foundation::IInspectable const &,struct winrt::Microsoft::UI::Xaml::RoutedEventArgs const &))",
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl::CommandBarControlGotFocusHandler(struct winrt::Windows::Foundation::IInspectable const & __ptr64,struct winrt::Microsoft::UI::Xaml::RoutedEventArgs const & __ptr64) __ptr64)",
+            },
+            (void**)&CommandBarControl_GotFocus_Original,
+            (void*)CommandBarControl_GotFocus_Hook,
+            true,
+        },
+        {
+            {
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl_Wave1::CommandBarControlGotFocusHandler(struct winrt::Windows::Foundation::IInspectable const &,struct winrt::Microsoft::UI::Xaml::RoutedEventArgs const &))",
+                LR"(public: void __cdecl winrt::FileExplorerExtensions::implementation::CommandBarControl_Wave1::CommandBarControlGotFocusHandler(struct winrt::Windows::Foundation::IInspectable const & __ptr64,struct winrt::Microsoft::UI::Xaml::RoutedEventArgs const & __ptr64) __ptr64)",
+            },
+            (void**)&CommandBarControl_Wave1_GotFocus_Original,
+            (void*)CommandBarControl_Wave1_GotFocus_Hook,
+            true,
+        },
     };
     return HookSymbols(module, symbolHooks, ARRAYSIZE(symbolHooks));
 }
@@ -881,10 +1630,25 @@ using LoadLibraryExW_t = decltype(&LoadLibraryExW);
 LoadLibraryExW_t LoadLibraryExW_Original;
 HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
     HMODULE module = LoadLibraryExW_Original(lpLibFileName, hFile, dwFlags);
-    if (module && !g_taskbarViewDllLoaded && (wcsstr(lpLibFileName, L"Taskbar.View.dll") || wcsstr(lpLibFileName, L"ExplorerExtensions.dll"))) {
-        if (!g_taskbarViewDllLoaded.exchange(true)) {
-            HookTaskbarViewDllSymbols(module);
-            Wh_ApplyHookOperations();
+    if (module && lpLibFileName && !g_unloading) {
+        PCWSTR fileName = lpLibFileName;
+        for (PCWSTR p = lpLibFileName; *p; p++) {
+            if (*p == L'\\' || *p == L'/') {
+                fileName = p + 1;
+            }
+        }
+
+        if (!g_taskbarViewDllLoaded && (_wcsicmp(fileName, L"Taskbar.View.dll") == 0 || _wcsicmp(fileName, L"ExplorerExtensions.dll") == 0)) {
+            if (!g_taskbarViewDllLoaded.exchange(true)) {
+                HookTaskbarViewDllSymbols(module);
+                Wh_ApplyHookOperations();
+            }
+        }
+        if (!g_fileExplorerExtDllLoaded && (_wcsicmp(fileName, L"FileExplorerExtensions.dll") == 0 || _wcsicmp(fileName, L"FileExplorerExtensions") == 0)) {
+            if (!g_fileExplorerExtDllLoaded.exchange(true)) {
+                HookFileExplorerExtensionsDllSymbols(module);
+                Wh_ApplyHookOperations();
+            }
         }
     }
     return module;
@@ -893,7 +1657,11 @@ HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dw
 void Wh_ModSettingsChanged() {
     LoadSettings();
     
-    // Handle Start Menu / Custom settings change
+    {
+        std::lock_guard<std::mutex> lock(g_pendingMutex);
+        g_scannedFrames.clear();
+    }
+
     HWND hCore = GetCoreWnd();
     if (hCore) {
         RunFromWindowThread(hCore, [](PVOID) { 
@@ -902,102 +1670,202 @@ void Wh_ModSettingsChanged() {
         }, nullptr);
     }
 
+    // Refresh UWP Grids
     {
         std::lock_guard<std::mutex> lock(g_gridMutex);
         for (auto& tracked : g_trackedGrids) {
             if (auto grid = tracked.ref.get()) {
                 std::wstring uName = tracked.uniqueName;
-                grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [grid, uName]() {
-                    RemoveInjectedFromGrid(grid);
-                    // Re-inject based on tracked name
-                    if (uName == c_InjectedControlName) {
-                        if (Wh_GetIntSetting(L"injectTaskbar")) CreateAndInjectVideo(grid, c_InjectedControlName);
-                    } else if (uName == L"StartButtonVideoGrid") {
-                        if (Wh_GetIntSetting(L"injectStartButton")) CreateAndInjectVideo(grid, L"StartButtonVideoGrid");
-                    } else if (uName == L"StartMenuVideoGrid") {
-                        if (Wh_GetIntSetting(L"injectStartMenu")) CreateAndInjectVideo(grid, L"StartMenuVideoGrid");
-                    } else if (uName.find(L"CustomVideoGrid_") == 0) {
-                        CreateAndInjectVideo(grid, uName);
-                    }
-                });
+                try {
+                    grid.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [grid, uName]() {
+                        if (g_unloading) return;
+                        RemoveInjectedFromGrid(grid);
+                        
+                        if (uName == c_InjectedControlName) {
+                            if (Wh_GetIntSetting(L"injectTaskbar")) CreateAndInjectVideo(grid, c_InjectedControlName);
+                        } else if (uName == L"StartButtonVideoGrid") {
+                            if (Wh_GetIntSetting(L"injectStartButton")) CreateAndInjectVideo(grid, L"StartButtonVideoGrid");
+                        } else if (uName == L"StartMenuVideoGrid") {
+                            if (Wh_GetIntSetting(L"injectStartMenu")) CreateAndInjectVideo(grid, L"StartMenuVideoGrid");
+                        } else if (uName.rfind(L"CustomVideoGrid_", 0) == 0) {
+                            CreateAndInjectVideo(grid, uName);
+                        }
+                    });
+                } catch (...) {}
+            }
+        }
+
+        // Refresh WinUI 3 Grids
+        for (auto& tracked : g_trackedGridsWinUI3) {
+            if (auto grid = tracked.ref.get()) {
+                std::wstring uName = tracked.uniqueName;
+                try {
+                    grid.DispatcherQueue().TryEnqueue(mud::DispatcherQueuePriority::Normal, [grid, uName]() {
+                        if (g_unloading) return;
+                        RemoveInjectedFromGridWinUI3(grid);
+                        CreateAndInjectVideoWinUI3(grid, uName);
+                    });
+                } catch (...) {}
             }
         }
     }
     ApplySettings(g_taskbarHeight);
+
+    std::wstring proc = GetCurrentProcessBaseName();
+    if (proc == L"explorer.exe") {
+        for (HWND hWnd : GetFileExplorerWnds()) {
+            RunFromWindowThread(hWnd, [](PVOID) {
+                ScanCurrentThreadForCommandBars();
+            }, nullptr);
+        }
+    }
 }
 
 BOOL Wh_ModInit() {
     LoadSettings();
     
-    WCHAR processName[MAX_PATH];
-    GetModuleFileName(nullptr, processName, MAX_PATH);
-    std::wstring proc(processName);
-    std::transform(proc.begin(), proc.end(), proc.begin(), ::towlower);
-
-    bool isExplorer = proc.find(L"explorer.exe") != std::wstring::npos;
+    std::wstring proc = GetCurrentProcessBaseName();
+    bool isExplorer = (proc == L"explorer.exe");
     
-    // Check if we should target this process for custom injection
     bool isCustomTarget = false;
-    int customCount = 0;
-    while (true) {
-        string_setting_unique_ptr customProc(Wh_GetStringSetting(L"customInjections[%d].processName", customCount));
-        if (!customProc || !*customProc.get()) break;
-
-        std::wstring customProcStr(customProc.get());
-        std::transform(customProcStr.begin(), customProcStr.end(), customProcStr.begin(), ::towlower);
-        if (proc.find(customProcStr) != std::wstring::npos) {
-            isCustomTarget = true;
-            break;
+    {
+        std::lock_guard<std::mutex> lock(g_modSettings.mutex);
+        for (auto const& ci : g_modSettings.customInjections) {
+            std::wstring customProc = ci.processName;
+            std::transform(customProc.begin(), customProc.end(), customProc.begin(), ::towlower);
+            if (proc.find(customProc) != std::wstring::npos) {
+                isCustomTarget = true;
+                break;
+            }
         }
-        customCount++;
     }
 
     if (isExplorer) {
-        HookTaskbarDllSymbols(); // Hook TrayUI in taskbar.dll
+        HookTaskbarDllSymbols();
         HMODULE mod = GetModuleHandle(L"Taskbar.View.dll");
         if (!mod) mod = GetModuleHandle(L"ExplorerExtensions.dll");
         if (mod) {
             g_taskbarViewDllLoaded = true;
             HookTaskbarViewDllSymbols(mod);
-        } else {
-            WindhawkUtils::SetFunctionHook(LoadLibraryExW, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
         }
+
+        HMODULE feeMod = GetModuleHandle(L"FileExplorerExtensions.dll");
+        if (feeMod) {
+            g_fileExplorerExtDllLoaded = true;
+            HookFileExplorerExtensionsDllSymbols(feeMod);
+        }
+
+        WindhawkUtils::SetFunctionHook(LoadLibraryExW, LoadLibraryExW_Hook, &LoadLibraryExW_Original);
         WindhawkUtils::SetFunctionHook(SHAppBarMessage, SHAppBarMessage_Hook, &SHAppBarMessage_Original);
     } 
     
-    if (isCustomTarget || proc.find(L"startmenuexperiencehost.exe") != std::wstring::npos || 
-        proc.find(L"searchhost.exe") != std::wstring::npos || proc.find(L"searchapp.exe") != std::wstring::npos) {
-        // Start Menu / Search / Custom Processes
+    if (isCustomTarget || proc == L"startmenuexperiencehost.exe" || 
+        proc == L"searchhost.exe" || proc == L"searchapp.exe") {
         HMODULE rt = GetModuleHandle(L"api-ms-win-core-winrt-l1-1-0.dll");
         if (rt) {
             auto pRo = (RoGetActivationFactory_t)GetProcAddress(rt, "RoGetActivationFactory");
-            WindhawkUtils::SetFunctionHook((void*)pRo, (void*)RoGetActivationFactory_Hook, (void**)&RoGetActivationFactory_Original);
+            if (pRo) {
+                WindhawkUtils::SetFunctionHook((void*)pRo, (void*)RoGetActivationFactory_Hook, (void**)&RoGetActivationFactory_Original);
+            }
         }
     }
     
-    // Performance Timer: Check every 1 second
-    SetTimer(nullptr, 0, 1000, PerformanceTimerProc);
+    g_perfTimerId = SetTimer(nullptr, 0, 1000, PerformanceTimerProc);
 
     return TRUE;
 }
 
 void Wh_ModAfterInit() { 
-    WCHAR processName[MAX_PATH];
-    GetModuleFileName(nullptr, processName, MAX_PATH);
-    std::wstring proc(processName);
-    std::transform(proc.begin(), proc.end(), proc.begin(), ::towlower);
+    std::wstring proc = GetCurrentProcessBaseName();
 
-    if (proc.find(L"explorer.exe") != std::wstring::npos) {
+    if (proc == L"explorer.exe") {
         ApplySettings(g_taskbarHeight); 
+        for (HWND hWnd : GetFileExplorerWnds()) {
+            RunFromWindowThread(hWnd, [](PVOID) {
+                ScanCurrentThreadForCommandBars();
+            }, nullptr);
+        }
     } 
     
     HWND h = GetCoreWnd();
     if (h) RunFromWindowThread(h, [](PVOID) { StartMenuInit(); }, nullptr);
 }
-void Wh_ModBeforeUninit() { g_unloading = true; }
+
+void Wh_ModBeforeUninit() { 
+    g_unloading = true; 
+    if (g_perfTimerId) {
+        KillTimer(nullptr, g_perfTimerId);
+        g_perfTimerId = 0;
+    }
+}
+
 void Wh_ModUninit() {
-    while (g_hookCallCounter > 0) Sleep(100);
-    std::vector<TrackedGridRef> local;
-    { std::lock_guard<std::mutex> lock(g_gridMutex); local = std::move(g_trackedGrids); }
-    for (auto& t : local) if (auto g = t.ref.get()) g.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [g]() { RemoveInjectedFromGrid(g); });
+    g_unloading = true;
+    if (g_perfTimerId) {
+        KillTimer(nullptr, g_perfTimerId);
+        g_perfTimerId = 0;
+    }
+
+    while (g_hookCallCounter > 0) Sleep(50);
+
+    if (double_48_value_Original) {
+        double defaultHeight = 48.0;
+        ProtectAndMemcpy(PAGE_READWRITE, double_48_value_Original, &defaultHeight, sizeof(double));
+        NotifyAllTaskbarWindows(WM_SETTINGCHANGE, SPI_SETLOGICALDPIOVERRIDE, 0);
+    }
+
+    std::vector<TrackedGridRef> localUwp;
+    std::vector<TrackedGridRefWinUI3> localWinUI3;
+    { 
+        std::lock_guard<std::mutex> lock(g_gridMutex); 
+        localUwp = std::move(g_trackedGrids); 
+        localWinUI3 = std::move(g_trackedGridsWinUI3); 
+    }
+
+    int totalPending = (int)localUwp.size() + (int)localWinUI3.size();
+    if (totalPending > 0) {
+        HANDLE hCleanupDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::atomic<int> pendingCleanups{ totalPending };
+
+        for (auto& t : localUwp) {
+            if (auto g = t.ref.get()) {
+                try {
+                    g.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [g, &pendingCleanups, hCleanupDone]() {
+                        try {
+                            RemoveInjectedFromGrid(g);
+                        } catch (...) {}
+                        if (--pendingCleanups <= 0) {
+                            SetEvent(hCleanupDone);
+                        }
+                    });
+                } catch (...) {
+                    if (--pendingCleanups <= 0) SetEvent(hCleanupDone);
+                }
+            } else {
+                if (--pendingCleanups <= 0) SetEvent(hCleanupDone);
+            }
+        }
+
+        for (auto& t : localWinUI3) {
+            if (auto g = t.ref.get()) {
+                try {
+                    g.DispatcherQueue().TryEnqueue(mud::DispatcherQueuePriority::Normal, [g, &pendingCleanups, hCleanupDone]() {
+                        try {
+                            RemoveInjectedFromGridWinUI3(g);
+                        } catch (...) {}
+                        if (--pendingCleanups <= 0) {
+                            SetEvent(hCleanupDone);
+                        }
+                    });
+                } catch (...) {
+                    if (--pendingCleanups <= 0) SetEvent(hCleanupDone);
+                }
+            } else {
+                if (--pendingCleanups <= 0) SetEvent(hCleanupDone);
+            }
+        }
+
+        WaitForSingleObject(hCleanupDone, 1200);
+        CloseHandle(hCleanupDone);
+    }
 }
