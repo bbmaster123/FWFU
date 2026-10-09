@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              drag-fade
 // @name            Drag Fade
-// @description     Fades window with live Acrylic, Mica, or Mica Alt during drag and resize
-// @version         0.5.8
+// @description     Fades windows during drag and resize with Acrylic or simple transparency
+// @version         0.5.15
 // @author          bbmaster123
 // @include         *
 // @compilerOptions -ldwmapi -lgdi32 -luser32 -lwinmm
@@ -14,27 +14,26 @@
   $name: Fade Effect Style
   $description: "Visual effect applied when dragging or resizing windows."
   $options:
-    - underlay: "Native DWM Backdrop Underlay (Live Acrylic, Mica, or Mica Alt behind window)"
+    - underlay: "Acrylic backdrop underlay behind the window"
     - simple: "Simple Transparent Fade (Classic alpha transition)"
-- underlayBackdrop: acrylic
-  $name: Backdrop Material (Underlay Mode)
-  $description: "DWM backdrop material applied behind the window during drag and resize."
-  $options:
-    - acrylic: "Acrylic (Frosted translucent blur with custom tint)"
-    - mica: "Mica (Dynamic wallpaper-tinted surface)"
-    - mica_alt: "Mica Alt (Tabbed wallpaper surface with enhanced contrast)"
 - targetOpacity: 160
   $name: Drag Opacity (0-255)
   $description: "Opacity of the window content while dragging (0 = transparent, 255 = opaque)."
+- acrylicRenderer: legacy
+  $name: Acrylic Renderer
+  $description: "System Acrylic needs Windows 11 build 22621 or later. On Windows 10 it falls back to Tinted Acrylic, so both choices look the same. If either renderer is unavailable, the other is tried."
+  $options:
+    - legacy: "Tinted Acrylic (default)"
+    - system: "Windows 11 System Acrylic (tinted fallback on Windows 10)"
 - tintColorHex: "202020"
-  $name: "Acrylic Tint Color (HEX)"
-  $description: "Hex color code for the acrylic tint (e.g. 000000 for dark, FFFFFF for frosted light, 202020 for slate)."
+  $name: "Tint Color (HEX)"
+  $description: "Hex color for tinted Acrylic and the optional Simple Fade tint (e.g. 202020)."
 - tintOpacity: 60
-  $name: "Acrylic Tint Opacity (0-255)"
-  $description: "Strength of the color tint overlay (0 = transparent tint, 255 = solid color tint)."
-- acrylicLuminance: false
-  $name: Acrylic Frosted Noise / Texture
-  $description: "Adds the Windows textured frosted noise layer over the blur. When disabled (default), removes the texture layer for a much clearer, high-transparency glass look."
+  $name: "Tint Opacity (0-255)"
+  $description: "Approximate tint strength for tinted Acrylic and, if enabled, Simple Fade tint (0 = no Simple Fade tint, 255 = strong tint)."
+- simpleTintEnabled: false
+  $name: "Tint Simple Transparent Fade"
+  $description: "Show a translucent sheet in the selected tint color behind the faded window. Off keeps the original plain transparent effect."
 - cornerStyle: round
   $name: Window Corner Style
   $description: "Corner radius style for the underlay backdrop."
@@ -47,7 +46,7 @@
   $description: "Speed of transition. Values 255 or higher are instant."
 - holdDelay: 250
   $name: Hold-to-Fade Delay (ms)
-  $description: "Delay before fading begins when holding title bar. Prevents single clicks from triggering flicker or accidental fades (0 = start instantly on click/drag)."
+  $description: "Delay while holding without dragging. An actual move or resize starts fading on the next timer tick (0 = fade immediately)."
 - enableOnMove: true
   $name: Enable on Window Move
   $description: "Fade window when dragging or moving by the titlebar."
@@ -79,40 +78,20 @@
 #include <dwmapi.h>
 #include <mmsystem.h>
 #include <windhawk_api.h>
-#include <unordered_set>
+#include <unordered_map>
+#include <vector>
 #include <mutex>
 #include <atomic>
 #include <cmath>
 #include <algorithm>
-#include <cstdio>
 
 // Windows 11 DWM backdrop and corner constants
 #ifndef DWMWA_SYSTEMBACKDROP_TYPE
 #define DWMWA_SYSTEMBACKDROP_TYPE 38
 #endif
 
-#ifndef DWMWA_MICA_EFFECT
-#define DWMWA_MICA_EFFECT 1029
-#endif
-
-#ifndef DWMSBT_AUTO
-#define DWMSBT_AUTO 0
-#endif
-
-#ifndef DWMSBT_NONE
-#define DWMSBT_NONE 1
-#endif
-
-#ifndef DWMSBT_MAINWINDOW
-#define DWMSBT_MAINWINDOW 2 // Mica
-#endif
-
 #ifndef DWMSBT_TRANSIENTWINDOW
 #define DWMSBT_TRANSIENTWINDOW 3 // Acrylic
-#endif
-
-#ifndef DWMSBT_TABBEDWINDOW
-#define DWMSBT_TABBEDWINDOW 4 // Mica Alt
 #endif
 
 #ifndef DWMWA_BORDER_COLOR
@@ -141,13 +120,7 @@
 
 // Undocumented SetWindowCompositionAttribute definitions
 typedef enum _ACCENT_STATE {
-    ACCENT_DISABLED = 0,
-    ACCENT_ENABLE_GRADIENT = 1,
-    ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
-    ACCENT_ENABLE_BLURBEHIND = 3,
-    ACCENT_ENABLE_ACRYLICBLURBEHIND = 4,
-    ACCENT_ENABLE_HOSTBACKDROP = 5,
-    ACCENT_INVALID_STATE = 6
+    ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
 } ACCENT_STATE;
 
 typedef struct _ACCENT_POLICY {
@@ -158,20 +131,7 @@ typedef struct _ACCENT_POLICY {
 } ACCENT_POLICY;
 
 typedef enum _WINDOWCOMPOSITIONATTRIB {
-    WCA_UNDEFINED = 0,
-    WCA_NCRENDERING_ENABLED = 1,
-    WCA_NCRENDERING_POLICY = 2,
-    WCA_TRANSITIONS_FORCEDISABLED = 3,
-    WCA_ALLOW_FORCE_DISABLED = 4,
-    WCA_GHOST_ALLOWED = 5,
-    WCA_NONCLIENT_RTL_LAYOUT = 6,
-    WCA_STYLEBOOL = 7,
-    WCA_FORCE_ICONIC_REPRESENTATION = 8,
-    WCA_EXTENDED_FRAME_BOUNDS = 9,
-    WCA_HAS_ICONIC_BITMAP = 10,
-    WCA_THEME_METRICS = 11,
     WCA_NCSHADOW = 12,
-    WCA_AU_WINDOW_COLOR_STYLE = 13,
     WCA_ACCENT_POLICY = 19
 } WINDOWCOMPOSITIONATTRIB;
 
@@ -190,10 +150,9 @@ enum FadeEffectMode {
     EFFECT_SIMPLE   = 1
 };
 
-enum BackdropType {
-    BACKDROP_ACRYLIC  = 0,
-    BACKDROP_MICA     = 1,
-    BACKDROP_MICA_ALT = 2
+enum AcrylicRenderer {
+    ACRYLIC_LEGACY = 0,
+    ACRYLIC_SYSTEM = 1
 };
 
 enum CornerStyleMode {
@@ -203,7 +162,6 @@ enum CornerStyleMode {
 };
 
 enum DragActionType {
-    ACTION_UNKNOWN = 0,
     ACTION_MOVE    = 1,
     ACTION_RESIZE  = 2
 };
@@ -215,14 +173,14 @@ enum UnderlayFollowMode {
 
 // Global Configuration
 static FadeEffectMode     g_fadeEffect          = EFFECT_UNDERLAY;
-static BackdropType       g_backdropType        = BACKDROP_ACRYLIC;
+static AcrylicRenderer    g_acrylicRenderer     = ACRYLIC_LEGACY;
 static CornerStyleMode    g_cornerStyle         = CORNER_ROUND;
 static int                g_targetOpacity       = 160;
 static BYTE               g_tintR               = 32;
 static BYTE               g_tintG               = 32;
 static BYTE               g_tintB               = 32;
 static BYTE               g_tintOpacity         = 60;
-static bool               g_acrylicLuminance    = false;
+static bool               g_simpleTintEnabled   = false;
 static int                g_fadeSpeed           = 20;
 static int                g_holdDelay           = 250;
 static bool               g_enableOnMove        = true;
@@ -234,9 +192,18 @@ static int                g_minWindowWidth      = 120;
 static int                g_minWindowHeight     = 80;
 
 static HINSTANCE          g_hInstance           = nullptr;
+static bool               g_timerResolutionEnabled = false;
 
 // Global unload flag to immediately stop intercepting messages when mod is updating or unloading
 static std::atomic<bool>  g_unloading{false};
+static std::atomic<unsigned> g_activeCallbacks{0};
+
+struct CallbackUse {
+    CallbackUse() { g_activeCallbacks.fetch_add(1); }
+    ~CallbackUse() { g_activeCallbacks.fetch_sub(1); }
+    CallbackUse(const CallbackUse&) = delete;
+    CallbackUse& operator=(const CallbackUse&) = delete;
+};
 
 struct FrameMargin {
     int left;
@@ -248,7 +215,8 @@ struct FrameMargin {
 struct DragState {
     HWND hTargetWnd;
     BYTE origAlpha;
-    LONG_PTR origExStyle;
+    COLORREF origColorKey;
+    DWORD origLayerFlags;
     bool hadLayered;
     bool isULW;
     DragActionType action;
@@ -261,7 +229,28 @@ struct DragState {
     // Hold delay configuration
     ULONGLONG triggerTime;
     bool fadeStarted;
+    bool ownsLayeredStyle;
     POINT startCursorPos;
+    RECT initialVisibleRect;
+    RECT initialWindowRect;
+    bool observedDragEvent;
+    unsigned callbackRefs;
+    bool cleanupRequested;
+};
+
+// Reentrant window messages can destroy a target while a fade call is still
+// using its state. Delay the delete until that outer call has returned.
+struct StateUse {
+    DragState* state;
+    explicit StateUse(DragState* value) : state(value) {
+        if (state) ++state->callbackRefs;
+    }
+    ~StateUse() {
+        if (state && --state->callbackRefs == 0 && state->cleanupRequested)
+            delete state;
+    }
+    StateUse(const StateUse&) = delete;
+    StateUse& operator=(const StateUse&) = delete;
 };
 
 // Forward declarations for animation functions
@@ -270,19 +259,34 @@ static void StepFadeIn(HWND hwnd, DragState* state);
 static void StepFadeOut(HWND hwnd, DragState* state);
 static void ActivateFade(HWND hwnd, DragState* state);
 static void CleanupAndRestoreWindow(HWND hwnd, DragState* state);
+static void RestoreWindowAppearance(HWND hwnd, DragState* state);
 
 // Tracking active windows for safe cleanup
-static std::unordered_set<HWND> g_activeWindows;
+// Only the target's UI thread dereferences DragState. Unload reads this
+// handle-only registry instead of fetching a potentially freed window property.
+static std::unordered_map<HWND, HWND> g_activeWindows;
 static std::mutex g_activeMutex;
 
 static void RegisterActiveWindow(HWND hwnd) {
     std::lock_guard<std::mutex> lock(g_activeMutex);
-    g_activeWindows.insert(hwnd);
+    if (g_activeWindows.emplace(hwnd, nullptr).second && g_activeWindows.size() == 1) {
+        g_timerResolutionEnabled = timeBeginPeriod(1) == TIMERR_NOERROR;
+    }
+}
+
+static void UpdateActiveHelper(HWND hwnd, HWND helper) {
+    std::lock_guard<std::mutex> lock(g_activeMutex);
+    auto it = g_activeWindows.find(hwnd);
+    if (it != g_activeWindows.end()) it->second = helper;
 }
 
 static void UnregisterActiveWindow(HWND hwnd) {
     std::lock_guard<std::mutex> lock(g_activeMutex);
-    g_activeWindows.erase(hwnd);
+    if (g_activeWindows.erase(hwnd) && g_activeWindows.empty() &&
+        g_timerResolutionEnabled) {
+        timeEndPeriod(1);
+        g_timerResolutionEnabled = false;
+    }
 }
 
 static int GetScreenRefreshRate() {
@@ -295,16 +299,27 @@ static int GetScreenRefreshRate() {
 }
 
 static void ParseHexColor(PCWSTR hexStr, BYTE& r, BYTE& g, BYTE& b) {
-    if (!hexStr) { r = 32; g = 32; b = 32; return; }
-    if (*hexStr == L'#') hexStr++;
-    unsigned int val = 0;
-    if (swscanf(hexStr, L"%x", &val) == 1) {
-        r = (val >> 16) & 0xFF;
-        g = (val >> 8) & 0xFF;
-        b = val & 0xFF;
-    } else {
-        r = 32; g = 32; b = 32;
+    if (hexStr && *hexStr == L'#') ++hexStr;
+    unsigned int value = 0;
+    if (hexStr) {
+        for (int i = 0; i < 6; ++i) {
+            WCHAR c = hexStr[i];
+            if (!c) break;
+            unsigned int digit;
+            if (c >= L'0' && c <= L'9') digit = c - L'0';
+            else if (c >= L'a' && c <= L'f') digit = c - L'a' + 10;
+            else if (c >= L'A' && c <= L'F') digit = c - L'A' + 10;
+            else break;
+            value = (value << 4) | digit;
+            if (i == 5 && hexStr[6] == 0) {
+                r = (BYTE)(value >> 16);
+                g = (BYTE)(value >> 8);
+                b = (BYTE)value;
+                return;
+            }
+        }
     }
+    r = g = b = 32;
 }
 
 static void LoadSettings() {
@@ -320,19 +335,10 @@ static void LoadSettings() {
         g_fadeEffect = EFFECT_UNDERLAY;
     }
 
-    PCWSTR backdropStr = Wh_GetStringSetting(L"underlayBackdrop");
-    if (backdropStr) {
-        if (wcscmp(backdropStr, L"mica") == 0) {
-            g_backdropType = BACKDROP_MICA;
-        } else if (wcscmp(backdropStr, L"mica_alt") == 0) {
-            g_backdropType = BACKDROP_MICA_ALT;
-        } else {
-            g_backdropType = BACKDROP_ACRYLIC;
-        }
-        Wh_FreeStringSetting(backdropStr);
-    } else {
-        g_backdropType = BACKDROP_ACRYLIC;
-    }
+    PCWSTR rendererStr = Wh_GetStringSetting(L"acrylicRenderer");
+    g_acrylicRenderer = rendererStr && wcscmp(rendererStr, L"system") == 0
+                            ? ACRYLIC_SYSTEM : ACRYLIC_LEGACY;
+    if (rendererStr) Wh_FreeStringSetting(rendererStr);
 
     PCWSTR cornerStr = Wh_GetStringSetting(L"cornerStyle");
     if (cornerStr) {
@@ -350,8 +356,8 @@ static void LoadSettings() {
 
     g_targetOpacity    = std::clamp(Wh_GetIntSetting(L"targetOpacity"), 0, 255);
     g_tintOpacity      = (BYTE)std::clamp(Wh_GetIntSetting(L"tintOpacity"), 0, 255);
-    g_acrylicLuminance = Wh_GetIntSetting(L"acrylicLuminance") != 0;
-    g_fadeSpeed        = std::max(1, Wh_GetIntSetting(L"fadeSpeed"));
+    g_simpleTintEnabled = Wh_GetIntSetting(L"simpleTintEnabled") != 0;
+    g_fadeSpeed        = std::clamp(Wh_GetIntSetting(L"fadeSpeed"), 1, 255);
     g_holdDelay        = std::clamp(Wh_GetIntSetting(L"holdDelay"), 0, 1000);
     g_enableOnMove     = Wh_GetIntSetting(L"enableOnMove") != 0;
     g_enableOnResize   = Wh_GetIntSetting(L"enableOnResize") != 0;
@@ -389,17 +395,6 @@ static void LoadSettings() {
     // Follow screen refresh rate automatically for silky-smooth 60Hz/120Hz/144Hz/240Hz animation
     int refreshHz = GetScreenRefreshRate();
     g_timerIntervalMs = std::clamp((int)std::round(1000.0 / (double)refreshHz), 1, 33);
-}
-
-// Delphi / VCL applications (e.g. WizTree) cannot tolerate persistent WS_EX_LAYERED on window close or paint
-static bool IsVclWindow(HWND hwnd) {
-    WCHAR className[64];
-    if (GetClassNameW(hwnd, className, 64)) {
-        if (className[0] == L'T' || wcsstr(className, L"WizTree") != NULL) {
-            return true;
-        }
-    }
-    return false;
 }
 
 static bool IsInternalModClass(HWND hwnd) {
@@ -448,21 +443,20 @@ static bool IsValidTargetWindow(HWND hwnd) {
         if (width < minW || height < minH) {
             return false;
         }
+    } else {
+        return false;
     }
     return true;
 }
 
-// Safely destroys helper windows across threads without leaking or jumping to unmapped code
+// Request helper destruction on its owning thread.
 static void SafeDestroyHelperWindow(HWND hHelper) {
     if (hHelper && IsWindow(hHelper)) {
-        KillTimer(hHelper, 1);
-        SetWindowLongPtrW(hHelper, GWLP_USERDATA, 0);
-
         DWORD helperTid = GetWindowThreadProcessId(hHelper, NULL);
         if (helperTid == GetCurrentThreadId()) {
             DestroyWindow(hHelper);
         } else {
-            // Post WM_CLOSE to the helper window so its owning thread destroys it cleanly
+            // The owning thread clears its own timer and state in WM_CLOSE.
             PostMessageW(hHelper, WM_CLOSE, 0, 0);
         }
     }
@@ -492,6 +486,12 @@ static bool GetTargetVisibleRect(HWND hTarget, const FrameMargin& margin, RECT* 
 }
 
 static LRESULT CALLBACK UnderlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    CallbackUse callback;
+    if (msg == WM_APP + 31) {
+        DragState* state = (DragState*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        if (state) CleanupAndRestoreWindow(state->hTargetWnd, state);
+        return 0;
+    }
     // Prevent any mouse sizing anchors or clicks from hitting the underlay window
     if (msg == WM_NCHITTEST) {
         return HTTRANSPARENT;
@@ -501,17 +501,38 @@ static LRESULT CALLBACK UnderlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         return 0;
     }
     if (msg == WM_CLOSE) {
+        DragState* state = (DragState*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        if (state && state->hHelperWnd == hwnd) {
+            CleanupAndRestoreWindow(state->hTargetWnd, state);
+            return 0;
+        }
         KillTimer(hwnd, 1);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         DestroyWindow(hwnd);
         return 0;
+    }
+    if (msg == WM_NCDESTROY) {
+        DragState* state = (DragState*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        if (state && state->hHelperWnd == hwnd) {
+            state->hHelperWnd = nullptr;
+            CleanupAndRestoreWindow(state->hTargetWnd, state);
+        }
     }
     if (msg == WM_ERASEBKGND) {
         return 1; // Prevent GDI background erase from drawing opaque black
     }
     if (msg == WM_PAINT) {
         PAINTSTRUCT ps;
-        BeginPaint(hwnd, &ps);
+        HDC dc = BeginPaint(hwnd, &ps);
+        // The Simple Fade tint helper is the only layered window of this
+        // class. The acrylic helper retains its own DWM-drawn background.
+        if (dc && (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED)) {
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            SetDCBrushColor(dc, RGB(g_tintR, g_tintG, g_tintB));
+            FillRect(dc, &client, (HBRUSH)GetStockObject(DC_BRUSH));
+        }
         EndPaint(hwnd, &ps);
         return 0; // Validate update region without GDI black fill
     }
@@ -526,11 +547,11 @@ static LRESULT CALLBACK UnderlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             KillTimer(hwnd, 1);
             return 0;
         }
+        StateUse keepAlive(state);
 
-        if (!IsWindow(state->hTargetWnd)) {
-            KillTimer(hwnd, 1);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            DestroyWindow(hwnd);
+        if (!IsWindow(state->hTargetWnd) ||
+            GetPropW(state->hTargetWnd, L"DragFadeState") != state) {
+            CleanupAndRestoreWindow(state->hTargetWnd, state);
             return 0;
         }
 
@@ -558,9 +579,22 @@ static LRESULT CALLBACK UnderlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             int dx = std::abs(curPt.x - state->startCursorPos.x);
             int dy = std::abs(curPt.y - state->startCursorPos.y);
             bool movedBeyondThreshold = (dx >= 4 || dy >= 4);
+            // Many applications process WM_SIZING themselves, so DefWindowProc
+            // never sees it. Read committed bounds on the existing UI-thread
+            // timer to recognize the first actual resize without the hold delay.
+            RECT currentRect{};
+            bool resized = g_enableOnResize &&
+                GetWindowRect(state->hTargetWnd, &currentRect) &&
+                (currentRect.right - currentRect.left !=
+                     state->initialWindowRect.right - state->initialWindowRect.left ||
+                 currentRect.bottom - currentRect.top !=
+                     state->initialWindowRect.bottom - state->initialWindowRect.top);
+            if (resized) state->action = ACTION_RESIZE;
 
-            if (movedBeyondThreshold || now >= state->triggerTime + (ULONGLONG)g_holdDelay) {
+            if (state->observedDragEvent || resized || movedBeyondThreshold ||
+                now >= state->triggerTime + (ULONGLONG)g_holdDelay) {
                 ActivateFade(state->hTargetWnd, state);
+                return 0; // ActivateFade can replace and destroy this timer window.
             } else {
                 return 0; // Still waiting for hold delay
             }
@@ -568,9 +602,9 @@ static LRESULT CALLBACK UnderlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
         // Active Position Tracking: Ensure underlay stays locked right behind the window as you drag/resize
         if (!state->isFadingIn && state->fadeStarted) {
-            bool shouldFollow = (state->action == ACTION_MOVE && g_underlayMoveMode == UNDERLAY_FOLLOW) ||
-                                (state->action == ACTION_RESIZE && g_underlayResizeMode == UNDERLAY_FOLLOW) ||
-                                (state->action == ACTION_UNKNOWN && g_underlayMoveMode == UNDERLAY_FOLLOW);
+            bool shouldFollow = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED) ||
+                                (state->action == ACTION_MOVE && g_underlayMoveMode == UNDERLAY_FOLLOW) ||
+                                (state->action == ACTION_RESIZE && g_underlayResizeMode == UNDERLAY_FOLLOW);
             if (shouldFollow) {
                 RECT rcTarget{};
                 if (GetTargetVisibleRect(state->hTargetWnd, state->margin, &rcTarget)) {
@@ -602,10 +636,6 @@ static LRESULT CALLBACK UnderlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 }
 
 static void EnsureHelperClassesRegistered() {
-    if (!g_hInstance) {
-        g_hInstance = GetModuleHandleW(NULL);
-    }
-
     WNDCLASSEXW existing{};
     if (GetClassInfoExW(g_hInstance, L"DragFadeUnderlayClass", &existing)) {
         return;
@@ -657,84 +687,62 @@ static HWND CreateUnderlayHelper(HWND hTarget, DragState* state, const RECT& rc)
     MARGINS margins = {-1, -1, -1, -1};
     DwmExtendFrameIntoClientArea(hUnderlay, &margins);
 
-    if (g_backdropType == BACKDROP_MICA) {
-        int dwmBackdrop = DWMSBT_MAINWINDOW;
-        DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_SYSTEMBACKDROP_TYPE, &dwmBackdrop, sizeof(dwmBackdrop));
-        BOOL mica = TRUE;
-        DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_MICA_EFFECT, &mica, sizeof(mica));
-    } else if (g_backdropType == BACKDROP_MICA_ALT) {
-        int dwmBackdrop = DWMSBT_TABBEDWINDOW;
-        DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_SYSTEMBACKDROP_TYPE, &dwmBackdrop, sizeof(dwmBackdrop));
-        BOOL mica = TRUE;
-        DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_MICA_EFFECT, &mica, sizeof(mica));
-    } else if (g_backdropType == BACKDROP_ACRYLIC && !g_acrylicLuminance) {
-        // Windows 11 Native Acrylic System Backdrop (Hardware-accelerated, zero-flicker at full screen refresh rate)
+    // The helper stays inactive behind the target. Mica falls back to gray for
+    // inactive windows, so use Acrylic only. Avoid combining backdrops: an
+    // accent gradient can replace native blur.
+    bool acrylicApplied = false;
+    if (g_acrylicRenderer == ACRYLIC_SYSTEM) {
         int dwmBackdrop = DWMSBT_TRANSIENTWINDOW;
-        HRESULT hr = DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_SYSTEMBACKDROP_TYPE, &dwmBackdrop, sizeof(dwmBackdrop));
-        if (SUCCEEDED(hr)) {
-            // If tint is configured, apply transparent gradient tint overlay
-            if (g_tintOpacity > 0 && g_pSetWindowCompositionAttribute) {
-                ACCENT_POLICY policy{};
-                policy.AccentState = ACCENT_ENABLE_TRANSPARENTGRADIENT;
-                policy.AccentFlags = 2;
-                policy.GradientColor = ((DWORD)g_tintOpacity << 24) | ((DWORD)g_tintB << 16) | ((DWORD)g_tintG << 8) | (DWORD)g_tintR;
+        acrylicApplied = SUCCEEDED(DwmSetWindowAttribute(
+            hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_SYSTEMBACKDROP_TYPE,
+            &dwmBackdrop, sizeof(dwmBackdrop)));
+    }
+    if (!acrylicApplied && g_pSetWindowCompositionAttribute) {
+        ACCENT_POLICY policy{};
+        policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
+        policy.AccentFlags = 2;
+        policy.GradientColor = ((DWORD)std::max(1, (int)g_tintOpacity) << 24) |
+                               ((DWORD)g_tintB << 16) |
+                               ((DWORD)g_tintG << 8) | (DWORD)g_tintR;
 
-                WINDOWCOMPOSITIONATTRIBDATA data{};
-                data.Attrib = WCA_ACCENT_POLICY;
-                data.pvData = &policy;
-                data.cbData = sizeof(policy);
-                g_pSetWindowCompositionAttribute(hUnderlay, &data);
-            }
-        } else {
-            // Windows 10 fallback: legacy SetWindowCompositionAttribute
-            int dwmNone = DWMSBT_NONE;
-            DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_SYSTEMBACKDROP_TYPE, &dwmNone, sizeof(dwmNone));
-
-            if (g_pSetWindowCompositionAttribute) {
-                ACCENT_POLICY policy{};
-                policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-                policy.AccentFlags = 0;
-                policy.GradientColor = ((DWORD)g_tintOpacity << 24) | ((DWORD)g_tintB << 16) | ((DWORD)g_tintG << 8) | (DWORD)g_tintR;
-
-                WINDOWCOMPOSITIONATTRIBDATA data{};
-                data.Attrib = WCA_ACCENT_POLICY;
-                data.pvData = &policy;
-                data.cbData = sizeof(policy);
-                g_pSetWindowCompositionAttribute(hUnderlay, &data);
-            }
-        }
-    } else {
-        // Acrylic with luminance noise texture enabled
-        int dwmBackdrop = DWMSBT_NONE;
-        DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_SYSTEMBACKDROP_TYPE, &dwmBackdrop, sizeof(dwmBackdrop));
-
-        if (g_pSetWindowCompositionAttribute) {
-            ACCENT_POLICY policy{};
-            policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-            policy.AccentFlags = g_acrylicLuminance ? 2 : 0;
-            policy.GradientColor = ((DWORD)g_tintOpacity << 24) | ((DWORD)g_tintB << 16) | ((DWORD)g_tintG << 8) | (DWORD)g_tintR;
-
-            WINDOWCOMPOSITIONATTRIBDATA data{};
-            data.Attrib = WCA_ACCENT_POLICY;
-            data.pvData = &policy;
-            data.cbData = sizeof(policy);
-            g_pSetWindowCompositionAttribute(hUnderlay, &data);
-        }
+        WINDOWCOMPOSITIONATTRIBDATA data{};
+        data.Attrib = WCA_ACCENT_POLICY;
+        data.pvData = &policy;
+        data.cbData = sizeof(policy);
+        acrylicApplied = g_pSetWindowCompositionAttribute(hUnderlay, &data) != FALSE;
+    }
+    if (!acrylicApplied && g_acrylicRenderer == ACRYLIC_LEGACY) {
+        // Fallback for Windows 11 when the legacy renderer is unavailable.
+        int dwmBackdrop = DWMSBT_TRANSIENTWINDOW;
+        HRESULT hr = DwmSetWindowAttribute(hUnderlay,
+                                           (DWMWINDOWATTRIBUTE)DWMWA_SYSTEMBACKDROP_TYPE,
+                                           &dwmBackdrop, sizeof(dwmBackdrop));
+        acrylicApplied = SUCCEEDED(hr);
+    }
+    if (!acrylicApplied) {
+        Wh_Log(L"Drag Fade: Acrylic backdrop unavailable for helper %p", hUnderlay);
+        DestroyWindow(hUnderlay);
+        return NULL;
     }
 
-    // Set corner preference: match target window corner preference or user setting
-    int targetCorner = DWMWCP_ROUND;
-    if (DwmGetWindowAttribute(hTarget, (DWMWINDOWATTRIBUTE)DWMWA_WINDOW_CORNER_PREFERENCE, &targetCorner, sizeof(targetCorner)) == S_OK && targetCorner != DWMWCP_DEFAULT) {
-        DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_WINDOW_CORNER_PREFERENCE, &targetCorner, sizeof(targetCorner));
+    // Explicit user choices override the target; the default follows its preference.
+    int corner = DWMWCP_ROUND;
+    if (g_cornerStyle == CORNER_ROUND_SMALL) {
+        corner = DWMWCP_ROUNDSMALL;
+    } else if (g_cornerStyle == CORNER_SQUARE) {
+        corner = DWMWCP_DONOTROUND;
     } else {
-        int corner = DWMWCP_ROUND;
-        if (g_cornerStyle == CORNER_ROUND_SMALL) {
-            corner = DWMWCP_ROUNDSMALL;
-        } else if (g_cornerStyle == CORNER_SQUARE) {
-            corner = DWMWCP_DONOTROUND;
+        int targetCorner = DWMWCP_DEFAULT;
+        if (DwmGetWindowAttribute(hTarget,
+                (DWMWINDOWATTRIBUTE)DWMWA_WINDOW_CORNER_PREFERENCE,
+                &targetCorner, sizeof(targetCorner)) == S_OK &&
+            targetCorner != DWMWCP_DEFAULT) {
+            corner = targetCorner;
         }
-        DwmSetWindowAttribute(hUnderlay, (DWMWINDOWATTRIBUTE)DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
     }
+    DwmSetWindowAttribute(hUnderlay,
+                          (DWMWINDOWATTRIBUTE)DWMWA_WINDOW_CORNER_PREFERENCE,
+                          &corner, sizeof(corner));
 
     // Match the target window's border color (or system default) so no black outline is produced
     COLORREF targetBorderColor = 0xFFFFFFFF; // DWMWA_COLOR_DEFAULT
@@ -754,17 +762,25 @@ static HWND CreateUnderlayHelper(HWND hTarget, DragState* state, const RECT& rc)
         g_pSetWindowCompositionAttribute(hUnderlay, &shadowData);
     }
 
-    // Position directly behind the target window in Z-order and show
-    SetWindowPos(hUnderlay, hTarget, rc.left, rc.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING);
+    // Dedicated timer for animation and release detection.
+    if (!SetTimer(hUnderlay, 1, g_timerIntervalMs, NULL)) {
+        DestroyWindow(hUnderlay);
+        return NULL;
+    }
 
-    // Dedicated timer on underlay window for native refresh rate animation and mouse-release watchdog
-    SetTimer(hUnderlay, 1, g_timerIntervalMs, NULL);
+    // Position the underlay behind the target before changing the target alpha.
+    // Delayed SWP_SHOWWINDOW during WM_MOVING can disturb drag tracking.
+    if (!SetWindowPos(hUnderlay, hTarget, rc.left, rc.top, w, h,
+                      SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING)) {
+        DestroyWindow(hUnderlay);
+        return NULL;
+    }
 
     return hUnderlay;
 }
 
 // Creates an invisible helper window to drive the timer watchdog when in Simple Fade mode
-static HWND CreateSimpleHelper(HWND hTarget, DragState* state) {
+static HWND CreateSimpleHelper(DragState* state) {
     EnsureHelperClassesRegistered();
 
     HWND hHelper = CreateWindowExW(
@@ -778,10 +794,44 @@ static HWND CreateSimpleHelper(HWND hTarget, DragState* state) {
 
     if (hHelper) {
         SetWindowLongPtrW(hHelper, GWLP_USERDATA, (LONG_PTR)state);
-        SetTimer(hHelper, 1, g_timerIntervalMs, NULL);
+        if (!SetTimer(hHelper, 1, g_timerIntervalMs, NULL)) {
+            DestroyWindow(hHelper);
+            return NULL;
+        }
     }
 
     return hHelper;
+}
+
+// Optional translucent tint for Simple Fade. The existing timer-only helper
+// remains in use until fading actually starts, avoiding a visible press flash.
+static HWND CreateTintedSimpleHelper(HWND target, DragState* state, const RECT& rc) {
+    EnsureHelperClassesRegistered();
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    if (width <= 0 || height <= 0) return NULL;
+
+    HWND helper = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"DragFadeUnderlayClass", NULL, WS_POPUP,
+        rc.left, rc.top, width, height,
+        NULL, NULL, g_hInstance, NULL);
+    if (!helper) return NULL;
+    SetWindowLongPtrW(helper, GWLP_USERDATA, (LONG_PTR)state);
+    if (!SetLayeredWindowAttributes(helper, 0, g_tintOpacity, LWA_ALPHA) ||
+        !SetTimer(helper, 1, g_timerIntervalMs, NULL)) {
+        DestroyWindow(helper);
+        return NULL;
+    }
+    // Paint while hidden so its first compositor frame already has the tint.
+    InvalidateRect(helper, NULL, FALSE);
+    UpdateWindow(helper);
+    if (!SetWindowPos(helper, target, rc.left, rc.top, width, height,
+                      SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING)) {
+        DestroyWindow(helper);
+        return NULL;
+    }
+    return helper;
 }
 
 // ---------------------------------------------------------------------------
@@ -789,38 +839,43 @@ static HWND CreateSimpleHelper(HWND hTarget, DragState* state) {
 // ---------------------------------------------------------------------------
 
 static void CleanupAndRestoreWindow(HWND hwnd, DragState* state) {
-    if (state) {
+    if (state && !state->cleanupRequested) {
+        state->cleanupRequested = true;
+        // The property is the ownership token. Detach it first so reentrant
+        // window messages cannot run a second animation on this state.
+        bool stillOwned = IsWindow(hwnd) &&
+            GetPropW(hwnd, L"DragFadeState") == state;
+        if (stillOwned) RemovePropW(hwnd, L"DragFadeState");
         // 1. Destroy helper window (halts its animation watchdog timer)
-        if (state->hHelperWnd) {
-            SafeDestroyHelperWindow(state->hHelperWnd);
-            state->hHelperWnd = NULL;
-        }
+        HWND helper = state->hHelperWnd;
+        state->hHelperWnd = nullptr;
+        if (helper) SafeDestroyHelperWindow(helper);
 
-        // 2. Restore target window original alpha
-        if (IsWindow(hwnd)) {
-            if (!state->isULW && state->fadeStarted) {
-                SetLayeredWindowAttributes(hwnd, 0, state->origAlpha, LWA_ALPHA);
-            }
-
-            // 3. Remove WS_EX_LAYERED if the window was not originally layered
-            // (or if it's a VCL window like WizTree) to prevent crashes or drawing issues
-            if (!state->hadLayered || IsVclWindow(hwnd)) {
-                LONG_PTR currentStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-                if (currentStyle & WS_EX_LAYERED) {
-                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, currentStyle & ~WS_EX_LAYERED);
-                    SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
-                }
-            }
-        }
+        if (stillOwned) RestoreWindowAppearance(hwnd, state);
 
         UnregisterActiveWindow(hwnd);
-        RemovePropW(hwnd, L"DragFadeState");
-        delete state;
+        if (!state->callbackRefs) delete state;
+    }
+}
+
+static void RestoreWindowAppearance(HWND hwnd, DragState* state) {
+    if (!IsWindow(hwnd)) return;
+    if (state->hadLayered && !state->isULW && state->fadeStarted) {
+        SetLayeredWindowAttributes(hwnd, state->origColorKey, state->origAlpha,
+                                   state->origLayerFlags);
+    } else if (state->ownsLayeredStyle) {
+        LONG_PTR currentStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if (currentStyle & WS_EX_LAYERED) {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, currentStyle & ~WS_EX_LAYERED);
+            SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                         SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        }
     }
 }
 
 static void ActivateFade(HWND hwnd, DragState* state) {
-    if (!state || state->fadeStarted || state->isFadingIn) return;
+    if (!state || state->cleanupRequested || state->fadeStarted || state->isFadingIn) return;
 
     state->fadeStarted = true;
     state->lastStepTime = GetTickCount64();
@@ -829,31 +884,77 @@ static void ActivateFade(HWND hwnd, DragState* state) {
     if (DwmGetWindowAttribute(hwnd, (DWMWINDOWATTRIBUTE)DWMWA_EXTENDED_FRAME_BOUNDS, &rcExt, sizeof(rcExt)) != S_OK) {
         GetWindowRect(hwnd, &rcExt);
     }
+    if (state->cleanupRequested) return;
 
     // Effect Specific Initializations
     if (g_fadeEffect == EFFECT_UNDERLAY) {
-        // Destroy any temporary simple timer helper and create the real backdrop underlay
-        if (state->hHelperWnd) {
-            SafeDestroyHelperWindow(state->hHelperWnd);
-            state->hHelperWnd = NULL;
+        bool stay = (state->action == ACTION_MOVE && g_underlayMoveMode == UNDERLAY_STAY) ||
+                    (state->action == ACTION_RESIZE && g_underlayResizeMode == UNDERLAY_STAY);
+        HWND previousHelper = state->hHelperWnd;
+        HWND underlay = CreateUnderlayHelper(
+            hwnd, state, stay ? state->initialVisibleRect : rcExt);
+        if (state->cleanupRequested) {
+            if (underlay) SafeDestroyHelperWindow(underlay);
+            return;
         }
-        state->hHelperWnd = CreateUnderlayHelper(hwnd, state, rcExt);
+        if (underlay) {
+            state->hHelperWnd = underlay;
+            if (previousHelper) SafeDestroyHelperWindow(previousHelper);
+        } else {
+            // Keep the existing watchdog and fall back to a plain fade.
+            if (!previousHelper) state->hHelperWnd = CreateSimpleHelper(state);
+            Wh_Log(L"Drag Fade: underlay creation failed; using simple fade");
+        }
     } else {
-        if (!state->hHelperWnd || !IsWindow(state->hHelperWnd)) {
-            state->hHelperWnd = CreateSimpleHelper(hwnd, state);
+        if (g_simpleTintEnabled && g_tintOpacity != 0) {
+            HWND previousHelper = state->hHelperWnd;
+            HWND tinted = CreateTintedSimpleHelper(hwnd, state, rcExt);
+            if (state->cleanupRequested) {
+                if (tinted) SafeDestroyHelperWindow(tinted);
+                return;
+            }
+            if (tinted) {
+                state->hHelperWnd = tinted;
+                if (previousHelper) SafeDestroyHelperWindow(previousHelper);
+            } else if (!previousHelper) {
+                state->hHelperWnd = CreateSimpleHelper(state);
+            }
+        } else if (!state->hHelperWnd || !IsWindow(state->hHelperWnd)) {
+            state->hHelperWnd = CreateSimpleHelper(state);
         }
     }
+    if (!state->hHelperWnd) {
+        state->fadeStarted = false;
+        CleanupAndRestoreWindow(hwnd, state); // No watchdog means no safe fade.
+        return;
+    }
+    UpdateActiveHelper(hwnd, state->hHelperWnd);
 
     // Make sure the target window is layered to allow alpha fading
     if (!state->isULW) {
         LONG_PTR currentStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         if (!(currentStyle & WS_EX_LAYERED)) {
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, currentStyle | WS_EX_LAYERED);
-            SetLayeredWindowAttributes(hwnd, 0, state->origAlpha, LWA_ALPHA);
+            SetLastError(ERROR_SUCCESS);
+            LONG_PTR previous = SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+                                                   currentStyle | WS_EX_LAYERED);
+            if (state->cleanupRequested) return;
+            if (previous == 0 && GetLastError() != ERROR_SUCCESS) {
+                CleanupAndRestoreWindow(hwnd, state);
+                return;
+            }
+            state->ownsLayeredStyle = true;
         }
 
+        const DWORD fadeFlags = state->origLayerFlags | LWA_ALPHA;
+        if (!SetLayeredWindowAttributes(hwnd, state->origColorKey, state->origAlpha,
+                                        fadeFlags)) {
+            CleanupAndRestoreWindow(hwnd, state);
+            return;
+        }
+        if (state->cleanupRequested) return;
         if (g_fadeSpeed >= 255) {
-            SetLayeredWindowAttributes(hwnd, 0, (BYTE)g_targetOpacity, LWA_ALPHA);
+            SetLayeredWindowAttributes(hwnd, state->origColorKey,
+                                       (BYTE)std::min(g_targetOpacity, (int)state->origAlpha), fadeFlags);
         } else {
             StepFadeOut(hwnd, state);
         }
@@ -861,12 +962,13 @@ static void ActivateFade(HWND hwnd, DragState* state) {
 }
 
 static void StepFadeOut(HWND hwnd, DragState* state) {
-    if (!state || state->isULW || !state->fadeStarted) return;
+    if (!state || state->cleanupRequested || state->isULW || !state->fadeStarted) return;
 
     BYTE currentAlpha = 255;
     if (!GetLayeredWindowAttributes(hwnd, NULL, &currentAlpha, NULL)) {
         currentAlpha = 255;
     }
+    if (state->cleanupRequested) return;
 
     ULONGLONG now = GetTickCount64();
     DWORD elapsed = (DWORD)(now - state->lastStepTime);
@@ -884,17 +986,19 @@ static void StepFadeOut(HWND hwnd, DragState* state) {
         if (step > maxStep) step = maxStep;
     }
 
-    if (currentAlpha > (BYTE)g_targetOpacity) {
+    int target = std::min(g_targetOpacity, (int)state->origAlpha);
+    if (currentAlpha > target) {
         int next = (int)currentAlpha - step;
-        if (next <= g_targetOpacity) {
-            next = g_targetOpacity;
+        if (next <= target) {
+            next = target;
         }
-        SetLayeredWindowAttributes(hwnd, 0, (BYTE)next, LWA_ALPHA);
+        SetLayeredWindowAttributes(hwnd, state->origColorKey, (BYTE)next,
+                                   state->origLayerFlags | LWA_ALPHA);
     }
 }
 
 static void StepFadeIn(HWND hwnd, DragState* state) {
-    if (!state) return;
+    if (!state || state->cleanupRequested) return;
     if (state->isULW || !state->fadeStarted) {
         CleanupAndRestoreWindow(hwnd, state);
         return;
@@ -904,6 +1008,7 @@ static void StepFadeIn(HWND hwnd, DragState* state) {
     if (!GetLayeredWindowAttributes(hwnd, NULL, &currentAlpha, NULL)) {
         currentAlpha = 255;
     }
+    if (state->cleanupRequested) return;
 
     ULONGLONG now = GetTickCount64();
     DWORD elapsed = (DWORD)(now - state->lastStepTime);
@@ -926,20 +1031,24 @@ static void StepFadeIn(HWND hwnd, DragState* state) {
             CleanupAndRestoreWindow(hwnd, state);
             return;
         }
-        SetLayeredWindowAttributes(hwnd, 0, (BYTE)next, LWA_ALPHA);
+        SetLayeredWindowAttributes(hwnd, state->origColorKey, (BYTE)next,
+                                   state->origLayerFlags | LWA_ALPHA);
     } else {
         CleanupAndRestoreWindow(hwnd, state);
     }
 }
 
 static void StartFadeOut(HWND hwnd, DragActionType action) {
+    if (g_unloading.load(std::memory_order_relaxed)) return;
     DragState* state = (DragState*)GetPropW(hwnd, L"DragFadeState");
 
     if (!state) {
-        state = new DragState();
+        state = new DragState{};
+        StateUse keepAlive(state);
         state->hTargetWnd = hwnd;
         state->action = action;
         state->triggerTime = GetTickCount64();
+        state->observedDragEvent = false;
         state->fadeStarted = false;
         state->lastStepTime = GetTickCount64();
         state->hHelperWnd = NULL;
@@ -948,16 +1057,16 @@ static void StartFadeOut(HWND hwnd, DragActionType action) {
         state->startedWithMouse = ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
                                   ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
 
-        state->origExStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        state->hadLayered = (state->origExStyle & WS_EX_LAYERED) != 0;
+        state->hadLayered = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
         state->isULW = false;
+        state->origColorKey = 0;
+        state->origLayerFlags = 0;
 
         if (state->hadLayered) {
             BYTE existingAlpha = 255;
-            COLORREF crKey = 0;
-            DWORD dwFlags = 0;
-            if (GetLayeredWindowAttributes(hwnd, &crKey, &existingAlpha, &dwFlags)) {
-                state->origAlpha = (existingAlpha > 0) ? existingAlpha : 255;
+            if (GetLayeredWindowAttributes(hwnd, &state->origColorKey,
+                                            &existingAlpha, &state->origLayerFlags)) {
+                state->origAlpha = (state->origLayerFlags & LWA_ALPHA) ? existingAlpha : 255;
             } else {
                 // Window has WS_EX_LAYERED but uses per-pixel UpdateLayeredWindow
                 state->origAlpha = 255;
@@ -966,11 +1075,19 @@ static void StartFadeOut(HWND hwnd, DragActionType action) {
         } else {
             state->origAlpha = 255;
         }
+        if (state->isULW) {
+            state->cleanupRequested = true; // No property or helper was installed.
+            return;
+        }
 
         // Accurately calculate the invisible DWM drop shadow / resize margin
         RECT rcWin{};
         RECT rcExt{};
-        GetWindowRect(hwnd, &rcWin);
+        if (!GetWindowRect(hwnd, &rcWin)) {
+            state->cleanupRequested = true;
+            return;
+        }
+        state->initialWindowRect = rcWin;
         if (DwmGetWindowAttribute(hwnd, (DWMWINDOWATTRIBUTE)DWMWA_EXTENDED_FRAME_BOUNDS, &rcExt, sizeof(rcExt)) == S_OK) {
             state->margin.left = rcExt.left - rcWin.left;
             state->margin.top = rcExt.top - rcWin.top;
@@ -980,20 +1097,21 @@ static void StartFadeOut(HWND hwnd, DragActionType action) {
             state->margin = {0, 0, 0, 0};
             rcExt = rcWin;
         }
+        state->initialVisibleRect = rcExt;
 
-        SetPropW(hwnd, L"DragFadeState", (HANDLE)state);
+        if (!SetPropW(hwnd, L"DragFadeState", (HANDLE)state)) {
+            state->cleanupRequested = true;
+            return;
+        }
         RegisterActiveWindow(hwnd);
 
         // If hold delay is configured, only create a lightweight invisible timer helper initially
         // The real underlay backdrop helper is only created when the fade actually activates
         if (g_holdDelay > 0) {
-            state->hHelperWnd = CreateSimpleHelper(hwnd, state);
+            state->hHelperWnd = CreateSimpleHelper(state);
+            if (!state->hHelperWnd) CleanupAndRestoreWindow(hwnd, state);
+            else UpdateActiveHelper(hwnd, state->hHelperWnd);
         } else {
-            if (g_fadeEffect == EFFECT_UNDERLAY) {
-                state->hHelperWnd = CreateUnderlayHelper(hwnd, state, rcExt);
-            } else {
-                state->hHelperWnd = CreateSimpleHelper(hwnd, state);
-            }
             ActivateFade(hwnd, state);
         }
     } else {
@@ -1048,8 +1166,11 @@ static LRESULT HandleDragMessages(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
     if (!hwnd || !IsWindow(hwnd)) return 0;
     if (IsInternalModClass(hwnd)) return 0;
+    // Both the target property and its helper belong to this UI thread.
+    if (GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) return 0;
 
     DragState* state = (DragState*)GetPropW(hwnd, L"DragFadeState");
+    StateUse keepAlive(state);
 
     if (!state) {
         if (uMsg != WM_SYSCOMMAND && uMsg != WM_ENTERSIZEMOVE && uMsg != WM_MOVING && uMsg != WM_SIZING) {
@@ -1089,67 +1210,41 @@ static LRESULT HandleDragMessages(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
             break;
         }
 
-        case WM_MOVING: {
-            if (!g_enableOnMove) return 0;
-            if (!state) {
-                StartFadeOut(hwnd, ACTION_MOVE);
-                state = (DragState*)GetPropW(hwnd, L"DragFadeState");
-            }
-            if (state) {
-                if (!state->fadeStarted && !state->isFadingIn) {
-                    ActivateFade(hwnd, state);
-                }
-
-                if (g_underlayMoveMode == UNDERLAY_FOLLOW && state->hHelperWnd && IsWindow(state->hHelperWnd) && state->fadeStarted) {
-                    RECT* r = (RECT*)lParam;
-                    int x = r->left + state->margin.left;
-                    int y = r->top + state->margin.top;
-                    int w = (r->right - r->left) - state->margin.left - state->margin.right;
-                    int h = (r->bottom - r->top) - state->margin.top - state->margin.bottom;
-                    if (w > 0 && h > 0) {
-                        SetWindowPos(state->hHelperWnd, hwnd, x, y, w, h,
-                                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
-                    }
-                }
-                StepFadeOut(hwnd, state);
-            }
-            break;
-        }
-
+        case WM_MOVING:
         case WM_SIZING: {
-            if (!g_enableOnResize) return 0;
+            DragActionType action = uMsg == WM_MOVING ? ACTION_MOVE : ACTION_RESIZE;
+            if ((action == ACTION_MOVE && !g_enableOnMove) ||
+                (action == ACTION_RESIZE && !g_enableOnResize)) return 0;
             if (!state) {
-                StartFadeOut(hwnd, ACTION_RESIZE);
+                StartFadeOut(hwnd, action);
                 state = (DragState*)GetPropW(hwnd, L"DragFadeState");
             }
             if (state) {
-                if (!state->fadeStarted && !state->isFadingIn) {
-                    ActivateFade(hwnd, state);
-                }
-
-                if (g_underlayResizeMode == UNDERLAY_FOLLOW && state->hHelperWnd && IsWindow(state->hHelperWnd) && state->fadeStarted) {
-                    RECT* r = (RECT*)lParam;
-                    int x = r->left + state->margin.left;
-                    int y = r->top + state->margin.top;
-                    int w = (r->right - r->left) - state->margin.left - state->margin.right;
-                    int h = (r->bottom - r->top) - state->margin.top - state->margin.bottom;
-                    if (w > 0 && h > 0) {
-                        SetWindowPos(state->hHelperWnd, hwnd, x, y, w, h,
-                                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
-                    }
-                }
-                StepFadeOut(hwnd, state);
+                // WM_MOVING/WM_SIZING carries a proposed rectangle. Leave the
+                // modal drag loop alone; the helper timer starts the fade after
+                // this message, and WM_WINDOWPOSCHANGED follows committed bounds.
+                state->action = action;
+                state->observedDragEvent = true;
             }
             break;
         }
 
         case WM_WINDOWPOSCHANGED: {
-            if (state && state->hHelperWnd && IsWindow(state->hHelperWnd) && !state->isFadingIn && state->fadeStarted) {
+            if (state && !state->fadeStarted && lParam && g_enableOnResize) {
+                WINDOWPOS* pos = (WINDOWPOS*)lParam;
+                if (!(pos->flags & SWP_NOSIZE) &&
+                    (pos->cx != state->initialWindowRect.right - state->initialWindowRect.left ||
+                     pos->cy != state->initialWindowRect.bottom - state->initialWindowRect.top)) {
+                    state->action = ACTION_RESIZE;
+                    state->observedDragEvent = true;
+                }
+            }
+            if (state && g_fadeEffect == EFFECT_UNDERLAY && state->hHelperWnd &&
+                IsWindow(state->hHelperWnd) && !state->isFadingIn && state->fadeStarted && lParam) {
                 WINDOWPOS* wp = (WINDOWPOS*)lParam;
                 if (!(wp->flags & SWP_NOMOVE) || !(wp->flags & SWP_NOSIZE)) {
                     bool shouldFollow = (state->action == ACTION_MOVE && g_underlayMoveMode == UNDERLAY_FOLLOW) ||
-                                        (state->action == ACTION_RESIZE && g_underlayResizeMode == UNDERLAY_FOLLOW) ||
-                                        (state->action == ACTION_UNKNOWN && g_underlayMoveMode == UNDERLAY_FOLLOW);
+                                        (state->action == ACTION_RESIZE && g_underlayResizeMode == UNDERLAY_FOLLOW);
                     if (shouldFollow) {
                         RECT rcTarget{};
                         if (GetTargetVisibleRect(hwnd, state->margin, &rcTarget)) {
@@ -1161,14 +1256,18 @@ static LRESULT HandleDragMessages(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                             }
                         }
                     }
-                    StepFadeOut(hwnd, state);
+                    if (!state->cleanupRequested) StepFadeOut(hwnd, state);
                 }
             }
             break;
         }
 
         case WM_LBUTTONUP:
-        case WM_NCLBUTTONUP:
+        case WM_NCLBUTTONUP: {
+            if (state && state->startedWithMouse) StartFadeIn(hwnd, state);
+            RemovePropW(hwnd, L"DragPendingAction");
+            break;
+        }
         case WM_EXITSIZEMOVE: {
             RemovePropW(hwnd, L"DragPendingAction");
             if (state) {
@@ -1190,23 +1289,8 @@ static LRESULT HandleDragMessages(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
         }
 
         case WM_DESTROY: {
-            UnregisterActiveWindow(hwnd);
             RemovePropW(hwnd, L"DragPendingAction");
-            if (state) {
-                if (state->hHelperWnd) {
-                    SafeDestroyHelperWindow(state->hHelperWnd);
-                    state->hHelperWnd = NULL;
-                }
-                // Clean up WS_EX_LAYERED on window close to protect Delphi/VCL apps and custom controls
-                if (!state->hadLayered) {
-                    LONG_PTR currentStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-                    if (currentStyle & WS_EX_LAYERED) {
-                        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, currentStyle & ~WS_EX_LAYERED);
-                    }
-                }
-                RemovePropW(hwnd, L"DragFadeState");
-                delete state;
-            }
+            if (state) CleanupAndRestoreWindow(hwnd, state);
             break;
         }
     }
@@ -1221,6 +1305,7 @@ typedef LRESULT (WINAPI *DefWindowProcA_t)(HWND, UINT, WPARAM, LPARAM);
 static DefWindowProcA_t DefWindowProcA_Orig = nullptr;
 
 static LRESULT WINAPI DefWindowProcW_Hook(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    CallbackUse callback;
     if (!g_unloading.load(std::memory_order_relaxed)) {
         HandleDragMessages(hwnd, uMsg, wParam, lParam);
     }
@@ -1228,6 +1313,7 @@ static LRESULT WINAPI DefWindowProcW_Hook(HWND hwnd, UINT uMsg, WPARAM wParam, L
 }
 
 static LRESULT WINAPI DefWindowProcA_Hook(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    CallbackUse callback;
     if (!g_unloading.load(std::memory_order_relaxed)) {
         HandleDragMessages(hwnd, uMsg, wParam, lParam);
     }
@@ -1240,7 +1326,11 @@ static LRESULT WINAPI DefWindowProcA_Hook(HWND hwnd, UINT uMsg, WPARAM wParam, L
 
 BOOL Wh_ModInit() {
     g_unloading.store(false);
-    g_hInstance = GetModuleHandleW(NULL);
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&UnderlayWndProc), &g_hInstance)) {
+        return FALSE;
+    }
     LoadSettings();
 
     // Dynamically resolve SetWindowCompositionAttribute
@@ -1249,56 +1339,77 @@ BOOL Wh_ModInit() {
         g_pSetWindowCompositionAttribute = (pfnSetWindowCompositionAttribute)GetProcAddress(hUser32, "SetWindowCompositionAttribute");
     }
 
-    // Enable 1ms timer precision
-    timeBeginPeriod(1);
-
-    Wh_SetFunctionHook((void*)GetProcAddress(hUser32, "DefWindowProcW"), (void*)DefWindowProcW_Hook, (void**)&DefWindowProcW_Orig);
-    Wh_SetFunctionHook((void*)GetProcAddress(hUser32, "DefWindowProcA"), (void*)DefWindowProcA_Hook, (void**)&DefWindowProcA_Orig);
+    if (!hUser32 ||
+        !Wh_SetFunctionHook((void*)GetProcAddress(hUser32, "DefWindowProcW"),
+                            (void*)DefWindowProcW_Hook, (void**)&DefWindowProcW_Orig) ||
+        !Wh_SetFunctionHook((void*)GetProcAddress(hUser32, "DefWindowProcA"),
+                            (void*)DefWindowProcA_Hook, (void**)&DefWindowProcA_Orig)) {
+        return FALSE;
+    }
     return TRUE;
 }
 
-void Wh_ModUninit() {
-    // 1. Immediately set unloading flag so all threads bypass hook message processing
+void Wh_ModBeforeUninit() {
+    // Stop creating states, then ask the owner of each helper to restore its target.
     g_unloading.store(true);
-    timeEndPeriod(1);
-
-    // 2. Clean up all active drag states and restore target windows
+    std::vector<HWND> helpers;
     {
         std::lock_guard<std::mutex> lock(g_activeMutex);
-        for (HWND hwnd : g_activeWindows) {
-            if (IsWindow(hwnd)) {
-                DragState* state = (DragState*)GetPropW(hwnd, L"DragFadeState");
-                if (state) {
-                    if (!state->isULW && state->fadeStarted) {
-                        SetLayeredWindowAttributes(hwnd, 0, state->origAlpha, LWA_ALPHA);
-                    }
-
-                    if (state->hHelperWnd) {
-                        SafeDestroyHelperWindow(state->hHelperWnd);
-                        state->hHelperWnd = NULL;
-                    }
-
-                    if (!state->hadLayered) {
-                        LONG_PTR currentStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-                        if (currentStyle & WS_EX_LAYERED) {
-                            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, currentStyle & ~WS_EX_LAYERED);
-                            SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
-                        }
-                    }
-
-                    RemovePropW(hwnd, L"DragFadeState");
-                    delete state;
-                }
-
-                RemovePropW(hwnd, L"DragPendingAction");
+        for (const auto& entry : g_activeWindows) {
+            if (entry.second) helpers.push_back(entry.second);
+        }
+    }
+    for (HWND helper : helpers) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(helper, &pid);
+        if (pid == GetCurrentProcessId() && IsInternalModClass(helper)) {
+            DWORD_PTR ignored = 0;
+            if (!SendMessageTimeoutW(helper, WM_APP + 31, 0, 0,
+                                     SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &ignored)) {
+                Wh_Log(L"Drag Fade: cleanup timed out for helper %p", helper);
             }
         }
-        g_activeWindows.clear();
     }
-
-    UnregisterClassW(L"DragFadeUnderlayClass", g_hInstance);
 }
 
-void Wh_ModSettingsChanged() {
-    LoadSettings();
+void Wh_ModUninit() {
+    std::vector<HWND> helpers;
+    bool activeStates = false;
+    {
+        std::lock_guard<std::mutex> lock(g_activeMutex);
+        activeStates = !g_activeWindows.empty();
+        for (const auto& entry : g_activeWindows) {
+            if (entry.second) helpers.push_back(entry.second);
+        }
+        if (g_timerResolutionEnabled) {
+            timeEndPeriod(1);
+            g_timerResolutionEnabled = false;
+        }
+    }
+    if (!activeStates && g_activeCallbacks.load() == 0) {
+        UnregisterClassW(L"DragFadeUnderlayClass", g_hInstance);
+        return;
+    }
+    {
+        // A busy owner or a reentrant callback can outlive the unload request.
+        // Keep its code and state mapped until the process exits.
+        HMODULE pinned = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                reinterpret_cast<LPCWSTR>(&UnderlayWndProc), &pinned)) {
+            Wh_Log(L"Drag Fade: could not pin module with active callbacks");
+        }
+        for (HWND helper : helpers) {
+            DWORD pid = 0;
+            GetWindowThreadProcessId(helper, &pid);
+            if (pid == GetCurrentProcessId() && IsInternalModClass(helper)) {
+                PostMessageW(helper, WM_APP + 31, 0, 0);
+            }
+        }
+    }
+}
+
+BOOL Wh_ModSettingsChanged(BOOL* bReload) {
+    *bReload = TRUE; // Reinitialize after all current drags are restored.
+    return TRUE;
 }
